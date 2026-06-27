@@ -54,10 +54,15 @@ jobs:
               cat "$f"; echo
             done
             # Single AI fix prompt at the very bottom, only when something failed.
+            # Inside a fenced code block so GitHub renders a copy button (CodeRabbit
+            # style). Keep the text plain (no inline backticks) so it copies clean.
             if [ "$TOTAL" -gt 0 ]; then
-              echo "<details><summary>🤖 Prompt for fix all with AI</summary>"
+              echo "<details>"
+              echo "<summary>🤖 Prompt for fix all with AI</summary>"
               echo
-              echo "Run \`code-ranker check --top 1\` and follow instructions to fix error. Loop until no errors left."
+              echo '```'
+              echo "Run code-ranker check --top 1 and follow instructions to fix error. Loop until no errors left."
+              echo '```'
               echo
               echo "</details>"
             fi
