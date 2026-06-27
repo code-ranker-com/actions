@@ -94,9 +94,9 @@ fi
 
 if [ "${N}" -gt 0 ] 2>/dev/null; then
   W=errors; [ "${N}" -eq 1 ] && W=error
-  SUMMARY="${LANGUAGE} ${N} ${W} ❌"
+  SUMMARY="${LANGUAGE}: ${N} ${W} ❌"
 else
-  SUMMARY="${LANGUAGE}"
+  SUMMARY="${LANGUAGE}: ok"
 fi
 
 KIND="${REPORT_KIND:-report}"
