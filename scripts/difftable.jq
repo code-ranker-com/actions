@@ -20,16 +20,20 @@ def fmt(n):
     elif $a >= 1       then ((n*10|round)/10|tostring)
     elif $a == 0       then "0"
     else ((n*1000|round)/1000|tostring) end;
-def sgn(d): if d > 0 then "+"+fmt(d) elif d < 0 then "−"+fmt(-d) else "0" end;
-# 🟢 when the change is in the good direction, 🔴 when bad, "" when neutral.
-def mark(d; dir):
-  if (dir|type) == "boolean"
-  then (if (if dir then d < 0 else d > 0 end) then "🟢 "
-        elif (if dir then d > 0 else d < 0 end) then "🔴 "
-        else "" end)
-  else "" end;
+# ASCII minus inside math (MathJax renders "-" as a proper minus).
+def sgn(d): if d > 0 then "+"+fmt(d) elif d < 0 then "-"+fmt(-d) else "0" end;
+# Δ cell: real colour via inline math \color (GitHub strips CSS colour, so this is
+# the only way to colour text inside a table). Green = good direction, red = bad,
+# plain = neutral (no agreed direction). Colours match the HTML report.
+def dcell(d; dir):
+  sgn(d) as $s
+  | if (dir|type) == "boolean"
+    then (if (if dir then d < 0 else d > 0 end) then "$\\color{#2a7a30}{" + $s + "}$"
+          elif (if dir then d > 0 else d < 0 end) then "$\\color{#c0392b}{" + $s + "}$"
+          else $s end)
+    else $s end;
 def rowline(lbl; b; c; dir):
-  (c - b) as $d | "| \(lbl) | \(fmt(b)) | \(fmt(c)) | \(mark($d; dir))\(sgn($d)) |";
+  (c - b) as $d | "| \(lbl) | \(fmt(b)) | \(fmt(c)) | \(dcell($d; dir)) |";
 def sechead(title): "| **\(title)** |  |  |  |";
 def normdir(x): if x == "lower_better" then true elif x == "higher_better" then false else null end;
 

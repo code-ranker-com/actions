@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Builds one language's <details> section for the PR comment / job summary.
+# Builds one language's <details> section for the PR comment / job summary, plus a
+# small meta file the aggregator uses for the single footer line.
 # Reads (cwd): snap.json (current), baseline/snap.json (optional), viol.json.
 # Env: LANGUAGE, N (violation count), URL (report url), VERIFY (activation url).
-# Writes: ck-comment/<LANGUAGE>.md
+# Writes: ck-comment/<LANGUAGE>.md  and  ck-comment/<LANGUAGE>.meta.json
 #
 # The stat-diff mirrors the HTML report's summary: a "sum always" section of
-# structural counts (Files/Folders/Crates/Edges/Nodes in cycles) followed by the
-# per-metric avg sections, with a 🟢/🔴 marker driven by each metric's direction.
-# Metric labels/groups/directions are read from the snapshot — nothing about the
-# metric set is hardcoded here (see difftable.jq). Schema-major compatibility is
-# checked by the workflow's ver_check step before this runs.
+# structural counts followed by per-metric avg sections, with a green/red colour
+# (inline math \color) driven by each metric's direction. Labels/groups/directions
+# are read from the snapshot — nothing about the metric set is hardcoded here (see
+# difftable.jq). The "avg · vs <ref>" caption + timestamp is written ONCE by the
+# aggregator (comment.yml) from the meta file, not per language.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LANGUAGE="${LANGUAGE:-report}"
@@ -19,9 +20,7 @@ statsof() { jq -c '(.graphs | to_entries[0].value).stats // {}' "$1"; }
 metaof()  { jq -c '(.graphs | to_entries[0].value).node_attributes // {}' "$1"; }
 groupsof(){ jq -c '(.graphs | to_entries[0].value).attribute_groups // {}' "$1"; }
 
-# Structural counts over INTERNAL nodes (external library nodes excluded, matching
-# the HTML). Folders = distinct dirs; Crates = distinct grouping-key values (null
-# when the level has no grouping); Nodes in cycles = distinct nodes across cycles.
+# Structural counts over INTERNAL nodes (external library nodes excluded).
 countsof() {
   jq -c '
     (.graphs | to_entries[0].value) as $g
@@ -38,7 +37,7 @@ countsof() {
   ' "$1"
 }
 
-countrows() { # $1 baseline.json $2 current.json -> JSON array [{label,b,c,dir}]
+countrows() { # $1 baseline $2 current -> [{label,b,c,dir}]
   jq -nc --argjson b "$(countsof "$1")" --argjson c "$(countsof "$2")" '
     [ {label:"Files",           b:$b.Files,   c:$c.Files,   dir:null},
       {label:"Folders",         b:$b.Folders, c:$c.Folders, dir:null},
@@ -48,10 +47,10 @@ countrows() { # $1 baseline.json $2 current.json -> JSON array [{label,b,c,dir}]
     | map(select(.b != null and .c != null)) '
 }
 
+mkdir -p ck-comment
+CDATE="$(jq -r '.generated_at // ""' snap.json 2>/dev/null)"
+
 if [ -f baseline/snap.json ]; then
-  BREF="$(jq -r '.git.branch // "baseline"' baseline/snap.json)"
-  BSHA="$(jq -r '(.git.commit // "")[0:7]' baseline/snap.json)"
-  DIFFHDR="**Stat diff** · avg · vs \`${BREF}\` @${BSHA}"
   DIFF="$(jq -rn \
     --argjson counts "$(countrows baseline/snap.json snap.json)" \
     --argjson bstats "$(statsof baseline/snap.json)" \
@@ -59,9 +58,20 @@ if [ -f baseline/snap.json ]; then
     --argjson meta   "$(metaof snap.json)" \
     --argjson groups "$(groupsof snap.json)" \
     -f "$HERE/difftable.jq")"
+  # meta for the single footer (all languages share the same baseline commit)
+  jq -n \
+    --arg ref    "$(jq -r '.git.branch // "baseline"' baseline/snap.json)" \
+    --arg sha    "$(jq -r '(.git.commit // "")' baseline/snap.json)" \
+    --arg origin "$(jq -r '.git.origin // ""' baseline/snap.json)" \
+    --arg bdate  "$(jq -r '.generated_at // ""' baseline/snap.json)" \
+    --arg cdate  "$CDATE" \
+    '{ref:$ref, sha:$sha, origin:$origin, bdate:$bdate, cdate:$cdate}' \
+    > "ck-comment/${LANGUAGE}.meta.json" 2>/dev/null || true
 else
   DIFF="_No baseline yet._"
-  DIFFHDR="**Stat diff** · avg"
+  mkdir -p ck-comment
+  jq -n --arg cdate "$CDATE" '{ref:"", sha:"", origin:"", bdate:"", cdate:$cdate}' \
+    > "ck-comment/${LANGUAGE}.meta.json" 2>/dev/null || true
 fi
 
 if [ "${N}" -gt 0 ] 2>/dev/null; then
@@ -87,8 +97,6 @@ mkdir -p ck-comment
   elif [ -n "${VERIFY:-}" ]; then
     echo "🔒 [activate](${VERIFY})"
   fi
-  echo
-  echo "$DIFFHDR"
   echo
   echo "$DIFF"
   echo
