@@ -6,6 +6,8 @@
 #   $cstats : current  stats object
 #   $meta   : node_attributes object  { metric: { name, label, group, direction } }
 #   $groups : attribute_groups object { group: { label } }  (drives section order)
+#   $bhdr   : markdown for the Baseline column header (e.g. "[Baseline](.../tree/main)")
+#   $chdr   : markdown for the Current column header
 #
 # Nothing about the metric set is hardcoded: metric rows are every numeric stat
 # field that changed, grouped by $meta[k].group, labelled from $meta, ordered by
@@ -60,5 +62,5 @@ def normdir(x): if x == "lower_better" then true elif x == "higher_better" then 
 
 | ((if ($sumrows | length) > 0 then [sechead("sum always")] + $sumrows else [] end) + $metarows) as $body
 | if ($body | length) == 0 then "_No metric changes._"
-  else (["| Metric | Baseline | Current | Δ |", "| --- | ---: | ---: | ---: |"] + $body) | join("\n")
+  else (["| Metric | \($bhdr) | \($chdr) | Δ |", "| --- | ---: | ---: | ---: |"] + $body) | join("\n")
   end

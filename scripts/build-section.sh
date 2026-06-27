@@ -50,6 +50,17 @@ countrows() { # $1 baseline $2 current -> [{label,b,c,dir}]
 mkdir -p ck-comment
 CDATE="$(jq -r '.generated_at // ""' snap.json 2>/dev/null)"
 
+branchlink() { # $1 snapshot $2 fallback-label -> "[label](origin/tree/branch)" or label
+  local origin branch
+  origin="$(jq -r '.git.origin // ""' "$1")"
+  branch="$(jq -r '.git.branch // ""' "$1")"
+  if [ -n "$origin" ] && [ -n "$branch" ]; then
+    printf '[%s](%s/tree/%s)' "$2" "$origin" "$branch"
+  else
+    printf '%s' "$2"
+  fi
+}
+
 if [ -f baseline/snap.json ]; then
   DIFF="$(jq -rn \
     --argjson counts "$(countrows baseline/snap.json snap.json)" \
@@ -57,6 +68,8 @@ if [ -f baseline/snap.json ]; then
     --argjson cstats "$(statsof snap.json)" \
     --argjson meta   "$(metaof snap.json)" \
     --argjson groups "$(groupsof snap.json)" \
+    --arg     bhdr   "$(branchlink baseline/snap.json Baseline)" \
+    --arg     chdr   "$(branchlink snap.json Current)" \
     -f "$HERE/difftable.jq")"
   # meta for the single footer (all languages share the same baseline commit)
   jq -n \
