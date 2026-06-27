@@ -88,7 +88,7 @@ mkdir -p ck-comment
   if [ "${N}" -gt 0 ] 2>/dev/null; then
     echo "**Violations**"
     jq -r '(if type=="array" then . else .violations end)[]
-           | "- `\(.location | sub("^\\{target\\}/";""))\(if .line then ":"+(.line|tostring) else "" end)` — \(.message)"' \
+           | "- `\(.location | sub("^\\{target\\}/";""))\(if .line then ":"+(.line|tostring) else "" end)` — \(.message | gsub("\\{target\\}/";""))"' \
        viol.json 2>/dev/null | head -20
     echo
   fi
@@ -99,6 +99,22 @@ mkdir -p ck-comment
   fi
   echo
   echo "$DIFF"
+  # When there are violations, add a nested collapsed "Prompt for fix" section.
+  # Basic placeholder prompt for now (to be refined later).
+  if [ "${N}" -gt 0 ] 2>/dev/null; then
+    echo
+    echo "<details><summary>Prompt for fix</summary>"
+    echo
+    echo "Fix the following code-ranker violations in the ${LANGUAGE} code without changing behavior:"
+    echo
+    jq -r '(if type=="array" then . else .violations end)[]
+           | "- `\(.location | sub("^\\{target\\}/";""))\(if .line then ":"+(.line|tostring) else "" end)` — \(.message | gsub("\\{target\\}/";""))"' \
+       viol.json 2>/dev/null | head -20
+    echo
+    echo "Keep the changes minimal and explain each fix."
+    echo
+    echo "</details>"
+  fi
   echo
   echo "</details>"
 } > "ck-comment/${LANGUAGE}.md"
