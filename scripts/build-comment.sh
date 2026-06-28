@@ -55,25 +55,22 @@ langs="$(jq -rn --slurpfile a snap.json --slurpfile b baseline/snap.json \
   '([($a[0].languages // {}|keys[]), ($b[0].languages // {}|keys[])] | add | unique)[]' 2>/dev/null \
   || jq -r '.languages // {} | keys[]' snap.json)"
 
-# Header. With a baseline, $VERDICT (improved/degraded/neutral) drives it and
-# TOTAL is the count of NEW violations; without a baseline it's a review (ok/N).
+# Header. The actionable signal is the violation COUNT; the `neutral` verdict is
+# noise (the per-language stat-diff already shows improved/degraded per metric), so
+# it is dropped — only `improved`/`degraded` still tag the header. A clean run with
+# nothing to flag is just `code-ranker` + the View-report link.
 case "${VERDICT:-}" in
   improved) VE="🟢 improved" ;;
   degraded) VE="🔴 degraded" ;;
-  neutral)  VE="➖ neutral" ;;
-  *)        VE="" ;;
+  *)        VE="" ;;            # neutral / unset → no verdict noise
 esac
-if [ -n "$VE" ]; then
-  if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-    W=new; HEAD="code-ranker: ${VE} · ${TOTAL} ${W} ❌"
-  else
-    HEAD="code-ranker: ${VE}"
-  fi
-elif [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-  W=errors; [ "$TOTAL" -eq 1 ] && W=error
-  HEAD="code-ranker: ${TOTAL} ${W} ❌"
+if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+  if [ -f baseline/snap.json ]; then W=new; else W=errors; [ "$TOTAL" -eq 1 ] && W=error; fi
+  HEAD="code-ranker: ${VE:+${VE} · }${TOTAL} ${W} ❌"
+elif [ -n "$VE" ]; then
+  HEAD="code-ranker: ${VE}"
 else
-  HEAD="code-ranker: ok"
+  HEAD="code-ranker"
 fi
 
 # Baseline line (one snapshot).
@@ -107,6 +104,25 @@ fi
 
   for lang in $langs; do
     n="$(jq --arg l "$lang" '[.[] | select(.language == $l)] | length' _viol.json 2>/dev/null || echo 0)"
+    # stat-diff for this language (computed first so a no-change language can be skipped).
+    if [ -f baseline/snap.json ]; then
+      DIFF="$(jq -rn \
+        --argjson counts "$(countrows "$lang")" \
+        --argjson bstats "$(lstats "$lang" baseline/snap.json)" \
+        --argjson cstats "$(lstats "$lang" snap.json)" \
+        --argjson meta   "$(lmeta "$lang" snap.json)" \
+        --argjson groups "$(lgroups "$lang" snap.json)" \
+        --arg bhdr "$( [ -n "${CORIGIN}" ] && [ -n "${bbranch:-}" ] && printf '[Baseline](%s/tree/%s)' "$CORIGIN" "$bbranch" || printf 'Baseline')" \
+        --arg chdr "$( [ -n "${CORIGIN}" ] && [ -n "${cbranch:-}" ] && printf '[Current](%s/tree/%s)' "$CORIGIN" "$cbranch" || printf 'Current')" \
+        -f "$HERE/difftable.jq")"
+    else
+      DIFF="_No baseline yet._"
+    fi
+    # Skip a language with nothing to report: no violations AND no metric/count
+    # changes vs the baseline (keeps the comment focused on what actually moved).
+    if [ "${n:-0}" -eq 0 ] 2>/dev/null && [ "$DIFF" = "_No metric changes._" ]; then
+      continue
+    fi
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
       w=errors; [ "$n" -eq 1 ] && w=error
       sum="${lang}: ${n} ${w} ❌"
@@ -130,20 +146,6 @@ fi
       echo
       echo "</details>"
       echo
-    fi
-    # stat-diff for this language
-    if [ -f baseline/snap.json ]; then
-      DIFF="$(jq -rn \
-        --argjson counts "$(countrows "$lang")" \
-        --argjson bstats "$(lstats "$lang" baseline/snap.json)" \
-        --argjson cstats "$(lstats "$lang" snap.json)" \
-        --argjson meta   "$(lmeta "$lang" snap.json)" \
-        --argjson groups "$(lgroups "$lang" snap.json)" \
-        --arg bhdr "$( [ -n "${CORIGIN}" ] && [ -n "${bbranch:-}" ] && printf '[Baseline](%s/tree/%s)' "$CORIGIN" "$bbranch" || printf 'Baseline')" \
-        --arg chdr "$( [ -n "${CORIGIN}" ] && [ -n "${cbranch:-}" ] && printf '[Current](%s/tree/%s)' "$CORIGIN" "$cbranch" || printf 'Current')" \
-        -f "$HERE/difftable.jq")"
-    else
-      DIFF="_No baseline yet._"
     fi
     echo "$DIFF"
     echo
