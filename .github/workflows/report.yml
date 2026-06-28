@@ -23,6 +23,14 @@ on:
         required: false
         type: boolean
         default: true
+      install_from_source:
+        description: >-
+          Build code-ranker from the checked-out repo instead of downloading the
+          released binary. For code-ranker's OWN dogfood: it runs the public CI
+          scripts against its branch sources. Needs a Rust workspace in the repo.
+        required: false
+        type: boolean
+        default: false
       api_url:
         description: Optional override for the upload endpoint.
         required: false
@@ -49,10 +57,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Default: install the prebuilt binary (seconds, no toolchain).
       - name: Install code-ranker (prebuilt binary)
+        if: ${{ !inputs.install_from_source }}
         run: |
           curl -fsSL "$CR_INSTALLER" | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Dogfood path: build code-ranker from the checked-out branch sources.
+      - name: Rust toolchain (source build)
+        if: inputs.install_from_source
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache (source build)
+        if: inputs.install_from_source
+        uses: Swatinem/rust-cache@v2
+      - name: Build code-ranker from source
+        if: inputs.install_from_source
+        run: |
+          cargo build --release -p code-ranker --locked
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
 
       # Rust (if present): the Rust plugin reads the graph via `cargo metadata
       # --offline`, which needs cargo's local cache warm. No-op for repos without
