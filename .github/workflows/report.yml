@@ -54,9 +54,9 @@ on:
 
 env:
   API_UPLOAD_URL: "https://api.code-ranker.com/upload"
-  # v5 is a prerelease, so `releases/latest` still points at v4 — pin the installer
-  # to the v5 tag until v5 becomes the latest stable release.
-  CR_INSTALLER: "https://github.com/ffedoroff/code-ranker/releases/download/v5.0.0-pre-alpha/code-ranker-installer.sh"
+  # v5.0.0 is the latest stable release, so track `releases/latest` (future v5.x
+  # patches apply automatically).
+  CR_INSTALLER: "https://github.com/ffedoroff/code-ranker/releases/latest/download/code-ranker-installer.sh"
 
 concurrency:
   group: code-ranker-${{ github.event.pull_request.number || github.ref }}
