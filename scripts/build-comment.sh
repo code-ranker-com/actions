@@ -92,13 +92,13 @@ else
 fi
 
 {
-  echo "## ${HEAD}"
-  echo
-  # One report button (covers all languages).
+  # Title + report link on ONE line (the link is inlined into the H2 header).
   if [ -n "${URL:-}" ]; then
-    echo "<h3><a href=\"${URL}\" target=\"_blank\" rel=\"noopener noreferrer\">View ${KIND} ↗</a></h3>"
+    echo "## ${HEAD} <a href=\"${URL}\" target=\"_blank\" rel=\"noopener noreferrer\">View ${KIND} ↗</a>"
   elif [ -n "${VERIFY:-}" ]; then
-    echo "🔒 [Activate to publish reports](${VERIFY})"
+    echo "## ${HEAD} 🔒 [Activate to publish reports](${VERIFY})"
+  else
+    echo "## ${HEAD}"
   fi
   echo
 
