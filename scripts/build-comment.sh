@@ -153,10 +153,8 @@ fi
     echo
   done
 
-  echo "<sub>${INFO}</sub>"
-
+  # AI fix prompt first, then the baseline/updated line at the very bottom.
   if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-    echo
     echo "<details>"
     echo "<summary>🤖 Prompt for fix all with AI</summary>"
     echo
@@ -165,7 +163,9 @@ fi
     echo '```'
     echo
     echo "</details>"
+    echo
   fi
+  echo "<sub>${INFO}</sub>"
 } > comment.md
 
 echo "${TOTAL:-0}" > errors.n
