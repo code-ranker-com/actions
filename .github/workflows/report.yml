@@ -1,50 +1,25 @@
 # ffedoroff/code-ranker-ci :: .github/workflows/report.yml
 #
-# Reusable workflow, run on the CLIENT's runner. For ONE language (the `language`
-# input) it analyzes the repo ONCE into a JSON snapshot, then derives from that
-# single snapshot:
-#   - the advisory HTML report, keyless-uploaded to the backend over OIDC;
-#   - a stat-diff vs the default-branch baseline (avg metrics, only changed rows);
-#   - the lint "check" verdict (non-zero exit on violations -> red job, can be a
-#     required status check).
+# Reusable workflow, run on the CLIENT's runner. code-ranker v5 analyzes ALL
+# languages in a single pass, so this is ONE job (no matrix): one analysis →
+# snapshot, from which it
+#   - generates an HTML report (a diff vs the default-branch baseline when one
+#     exists) and keyless-uploads it over OIDC (advisory);
+#   - posts ONE sticky PR comment: header (ok / N errors), a View-report button, a
+#     <details> per language (its violations + stat-diff), baseline line, AI prompt;
+#   - runs the lint gate `check` (do_check) — non-zero exit reds the job.
 #
-# Baseline: the default-branch snapshot is kept in the Actions cache (keyed per
-# language). Default-branch runs refresh it; every other branch / PR restores it
-# (cache scope lets any branch read the default-branch cache) so diffs work on
-# ANY branch, not just default.
-#
-# On a PR each language stages a markdown `<details>` fragment as an artifact; the
-# separate comment.yml job merges them into ONE sticky comment. On a push the same
-# fragment goes to the job summary. There is NO secret here: identity is keyless
-# OIDC. Clients pin a thin caller stub at @v1; we ship changes by moving the tag.
+# Baseline = the default-branch snapshot, kept in the Actions cache (single key);
+# default-branch pushes refresh it, every branch/PR reads it (cache scope), so the
+# stat-diff works on any branch. NO secret: identity is keyless OIDC. Clients pin a
+# thin caller stub at @v1; we ship changes by moving the tag.
 name: code-ranker
 
 on:
   workflow_call:
     inputs:
-      language:
-        description: >-
-          code-ranker plugin to run: rust | javascript | typescript | python |
-          go | c | cpp | csharp | markdown. Empty = auto-detect (legacy).
-        required: false
-        type: string
-        default: ""
-      do_report:
-        description: Generate + upload the advisory HTML report (never fails CI).
-        required: false
-        type: boolean
-        default: true
       do_check:
-        description: >-
-          Run the lint gate. When true, violations make THIS job red so it can be
-          required in branch protection. When false the job stays advisory.
-        required: false
-        type: boolean
-        default: false
-      pr_comment:
-        description: >-
-          Contribute this language's section to the single aggregated PR comment
-          (staged as an artifact for comment.yml to collect).
+        description: Run the lint gate (non-zero exit reds the job). false = advisory only.
         required: false
         type: boolean
         default: true
@@ -56,96 +31,79 @@ on:
 
 env:
   API_UPLOAD_URL: "https://api.code-ranker.com/upload"
+  # v5 is a prerelease, so `releases/latest` still points at v4 — pin the installer
+  # to the v5 tag until v5 becomes the latest stable release.
+  CR_INSTALLER: "https://github.com/ffedoroff/code-ranker/releases/download/v5.0.0-pre-alpha/code-ranker-installer.sh"
 
-# One in-flight run per PR/ref PER LANGUAGE. The language must be in the group key
-# or concurrent matrix jobs (rust, js, ...) of the same ref would cancel each other.
 concurrency:
-  group: code-ranker-${{ inputs.language }}-${{ github.event.pull_request.number || github.ref }}
+  group: code-ranker-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   code-ranker:
-    name: ${{ inputs.language || 'code-ranker' }}
     runs-on: ubuntu-22.04
-    # No job-level continue-on-error: advisory steps (report/upload/stage) opt out
-    # per-step, so ONLY the check gate can fail the job. The single PR comment is
-    # posted by comment.yml. Permissions come from the CALLER stub: id-token: write,
-    # contents: read, pull-requests: write.
+    # No job-level continue-on-error: advisory steps (render-diff/upload/comment)
+    # opt out per-step; only the check gate (and a broken analysis) fail the job.
+    # Permissions come from the CALLER stub: id-token: write, contents: read,
+    # pull-requests: write.
     steps:
       - uses: actions/checkout@v4
 
       - name: Install code-ranker (prebuilt binary)
         run: |
-          curl -fsSL https://github.com/ffedoroff/code-ranker/releases/latest/download/code-ranker-installer.sh | sh
+          curl -fsSL "$CR_INSTALLER" | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      # Rust-only: the Rust plugin reads the dependency graph via
-      # `cargo metadata --offline`, which needs cargo's local cache warm. Other
-      # languages walk the filesystem and need no setup.
-      - name: Warm Cargo cache (Rust only)
-        if: inputs.language == 'rust' || (inputs.language == '' && hashFiles('Cargo.toml') != '')
+      # Rust (if present): the Rust plugin reads the graph via `cargo metadata
+      # --offline`, which needs cargo's local cache warm. No-op for repos without
+      # a Cargo.toml.
+      - name: Warm Cargo cache (Rust projects)
+        if: hashFiles('Cargo.toml') != ''
         run: cargo fetch --manifest-path Cargo.toml
 
-      # Analyze ONCE -> snap.json + HTML in a single invocation (cargo metadata at
-      # most once). The check gate + stat-diff below re-read snap.json.
+      # Analyze ALL languages once (v5 auto-detect; no --plugins) -> snapshot + HTML.
       - name: Analyze -> snapshot + HTML
-        continue-on-error: ${{ inputs.do_check != true }}
         env:
-          LANGUAGE: ${{ inputs.language }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           H="$(git rev-parse --short=12 HEAD)"; echo "H=$H" >> "$GITHUB_ENV"
           BR="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          PLUGIN_ARG=(); [ -n "$LANGUAGE" ] && PLUGIN_ARG=(--plugin="$LANGUAGE")
-          code-ranker report . "${PLUGIN_ARG[@]}" \
+          code-ranker report . \
             --git.branch="$BR" --git.commit="${PR_HEAD_SHA:-$GITHUB_SHA}" \
             --git.dirty-files=0 --git.origin="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --output.json.path="snap.json" --output.html.path="report-${H}.html"
-          # default: plain report; a diff is rendered below when a baseline exists
           echo "REPORT_FILE=report-${H}.html" >> "$GITHUB_ENV"
           echo "REPORT_KIND=report" >> "$GITHUB_ENV"
 
-      # Restore the default-branch baseline snapshot for this language. restore-keys
-      # prefix gets the most recent one in scope (a feature branch / PR sees the
-      # default-branch cache). Empty on the very first run -> diff shows "no baseline".
+      # Default-branch baseline snapshot (single key; cache scope lets any branch/PR
+      # read the default-branch cache). Empty on the first run -> diff "no baseline".
       - name: Restore baseline snapshot
-        id: baseline
         uses: actions/cache/restore@v4
         with:
           path: baseline
-          key: ck-baseline-${{ inputs.language || 'auto' }}-${{ github.sha }}
+          key: ck-baseline-${{ github.sha }}
           restore-keys: |
-            ck-baseline-${{ inputs.language || 'auto' }}-
+            ck-baseline-
 
-      # Compare schema_version major parts between snap.json and baseline/snap.json.
-      # Snapshots from different major versions have incompatible structures; diffing
-      # them produces misleading numbers. When majors differ, write a short note into
-      # the comment fragment and skip build-section.sh entirely.
+      # Incompatible snapshot schema major -> drop the baseline so the diff falls
+      # back to "no baseline" instead of producing misleading numbers.
       - name: Check baseline version compatibility
-        id: ver_check
         continue-on-error: true
         run: |
           set -uo pipefail
-          SKIP=false
           if [ -f baseline/snap.json ]; then
-            CUR=$(jq -r '.schema_version // "0.0"' snap.json 2>/dev/null | cut -d. -f1)
-            BAS=$(jq -r '.schema_version // "0.0"' baseline/snap.json 2>/dev/null | cut -d. -f1)
-            if [ -n "$CUR" ] && [ -n "$BAS" ] && [ "$CUR" != "$BAS" ]; then
-              SKIP=true
-              LANG="${{ inputs.language || 'report' }}"
-              mkdir -p ck-comment
-              printf '> **code-ranker:** baseline was generated by schema v%s, current is v%s — diff skipped (major version mismatch). The baseline will be refreshed on the next push to the default branch.\n' \
-                "$BAS" "$CUR" > "ck-comment/${LANG}.md"
+            CUR=$(jq -r '.schema_version // "0"' snap.json | cut -d. -f1)
+            BAS=$(jq -r '.schema_version // "0"' baseline/snap.json | cut -d. -f1)
+            if [ "$CUR" != "$BAS" ]; then
+              echo "::notice::baseline schema v$BAS != current v$CUR — diff skipped until default-branch baseline refreshes"
+              rm -rf baseline
             fi
           fi
-          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
 
-      # When a compatible baseline exists, re-render the HTML as a DIFF report from
-      # the two snapshots (no re-analysis; --baseline emits a *-diff.html). The
-      # download button then offers the diff instead of the plain report.
+      # Diff HTML report from the two snapshots (no re-analysis; --baseline emits a
+      # *-diff.html). The button then offers the diff.
       - name: Render diff report
-        if: steps.ver_check.outputs.skip != 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -158,37 +116,30 @@ jobs:
             fi
           fi
 
-      # Violations from the SAME snapshot (no re-analysis). --exit-zero so this
-      # advisory step never fails. count -> summary line; list -> comment body.
+      # Violations across all languages from the SAME snapshot (each carries a
+      # .language field). --exit-zero so this advisory step never fails.
       - name: Collect violations
-        id: viol
         continue-on-error: true
-        run: |
-          set -uo pipefail
-          code-ranker check snap.json --output-format json --exit-zero > viol.json 2>/dev/null || echo '[]' > viol.json
-          N="$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)"
-          echo "count=${N:-0}" >> "$GITHUB_OUTPUT"
+        run: code-ranker check snap.json --output-format json --exit-zero > viol.json 2>/dev/null || echo '[]' > viol.json
 
       # Same-repo only: fork PRs get NO id-token. Advisory: continue-on-error.
       - name: Upload to code-ranker (OIDC, keyless)
         if: >-
-          inputs.do_report &&
-          (github.event.pull_request.head.repo.full_name == github.repository
-           || github.event_name == 'push')
+          github.event.pull_request.head.repo.full_name == github.repository
+          || github.event_name == 'push'
         id: up
         continue-on-error: true
         env:
           API_URL: ${{ inputs.api_url != '' && inputs.api_url || env.API_UPLOAD_URL }}
-          LANGUAGE: ${{ inputs.language }}
         run: |
           set -euo pipefail
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=code-ranker-reports" | jq -r .value)
+          N=$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)
           OUT=$(curl -sS -w $'\n%{http_code}' -X POST "$API_URL" \
             -H "Authorization: Bearer $TOKEN" \
             -F "pr=${{ github.event.pull_request.number }}" \
-            -F "language=${LANGUAGE:-}" \
-            -F "violations=${{ steps.viol.outputs.count }}" \
+            -F "violations=${N:-0}" \
             -F "report=@${REPORT_FILE};type=text/html")
           CODE="${OUT##*$'\n'}"; BODY="${OUT%$'\n'*}"
           if [ "$CODE" = "200" ]; then
@@ -200,10 +151,7 @@ jobs:
             echo "::warning title=code-ranker upload failed::HTTP ${CODE}: ${BODY}"
           fi
 
-      # Fetch the helper scripts at the EXACT version of this reusable workflow
-      # (job_workflow_sha = the commit of report.yml being run), so the script and
-      # the workflow never drift. The target repo is the client's; this checks out
-      # code-ranker-ci into a side dir without touching it.
+      # Helper scripts at the EXACT version of this reusable workflow.
       - name: Get code-ranker-ci scripts
         uses: actions/checkout@v4
         with:
@@ -211,37 +159,27 @@ jobs:
           ref: ${{ github.job_workflow_sha }}
           path: .ck-ci
 
-      # Build this language's <details> section: summary line ("lang" / "lang N
-      # error(s) ❌"), violations, report link (always), and the stat-diff table
-      # (avg, only changed rows; labels/groups read dynamically from the snapshot).
-      # Skipped when ver_check wrote the note itself (major version mismatch).
-      - name: Build section
-        if: steps.ver_check.outputs.skip != 'true'
+      - name: Build comment
         continue-on-error: true
         env:
-          LANGUAGE: ${{ inputs.language || 'report' }}
-          N: ${{ steps.viol.outputs.count }}
           URL: ${{ steps.up.outputs.url }}
           VERIFY: ${{ steps.up.outputs.verify_url }}
-        run: bash .ck-ci/scripts/build-section.sh
+        run: bash .ck-ci/scripts/build-comment.sh
 
-      # PR: stage this language's section for comment.yml to merge into ONE comment.
-      - name: Upload PR comment fragment
-        if: github.event_name == 'pull_request' && inputs.pr_comment
-        uses: actions/upload-artifact@v4
+      # One sticky comment per PR, updated in place (fixed header).
+      - name: Sticky comment
+        if: github.event_name == 'pull_request' && hashFiles('comment.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          name: ck-comment-${{ inputs.language || 'report' }}
-          path: ck-comment/
-          if-no-files-found: ignore
-          retention-days: 1
+          header: code-ranker
+          path: comment.md
 
-      # Push: no PR to comment on -> surface the section in the job summary instead.
+      # Push: surface the same body in the job summary (no PR to comment on).
       - name: Job summary
-        if: github.event_name == 'push'
-        run: cat "ck-comment/${{ inputs.language || 'report' }}.md" >> "$GITHUB_STEP_SUMMARY" || true
+        if: github.event_name == 'push' && hashFiles('comment.md') != ''
+        run: cat comment.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Default-branch runs refresh the baseline for everyone else. Overwrite the
-      # restored baseline dir with the current snapshot, then save under the sha key.
+      # Default-branch pushes refresh the baseline for every other branch.
       - name: Stage new baseline (default branch)
         if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
         run: mkdir -p baseline && cp snap.json baseline/snap.json
@@ -250,10 +188,10 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: baseline
-          key: ck-baseline-${{ inputs.language || 'auto' }}-${{ github.sha }}
+          key: ck-baseline-${{ github.sha }}
 
-      # Lint gate (do_check=true). Reads the SAME snapshot; non-zero exit on
-      # violations reds the job so it can be a required status check. Runs LAST.
+      # Lint gate: reds the job on violations (so it can be a required status
+      # check). Reads the SAME snapshot. Runs LAST so the comment is already posted.
       - name: Check (lint gate)
         if: inputs.do_check
         run: code-ranker check snap.json --output-format github

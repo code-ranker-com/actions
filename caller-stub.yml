@@ -4,110 +4,36 @@
 # you -- all real logic lives in the reusable workflow pinned at @v1, so you never
 # edit it. We ship updates by moving the v1 tag.
 #
-# The onboarding PR fills `matrix.language` with the languages it detected in your
-# repo that code-ranker supports (one job per language). The list below is just an
-# example -- yours will match your repo.
+# code-ranker v5 analyzes ALL languages in one pass, so this is a single job: one
+# report + one check + one PR comment for the whole repo.
 #
 # No secrets are required: identity is proven via keyless OIDC.
 name: code-ranker
 on:
   pull_request:
-  push:
+  push:                     # any branch — the stat-diff baseline works everywhere
 jobs:
   code-ranker:
-    name: code-ranker (${{ matrix.language }})   # clean per-language check name
-    # Runs on every PR and on pushes to ANY branch, so stat-diffs build on feature
-    # branches too. The diff baseline is the default-branch snapshot, refreshed by
-    # report.yml on default-branch pushes and read everywhere via the Actions cache.
-    strategy:
-      fail-fast: false          # one language failing must not cancel the others
-      matrix:
-        # One editable line per language: flip do_check to false to make a
-        # language advisory-only, or pr_comment to false to drop it from the PR
-        # comment. Filled by the onboarding PR from detected languages.
-        include:
-          - { language: rust,       do_report: true, do_check: true, pr_comment: true }
-          - { language: javascript, do_report: true, do_check: true, pr_comment: true }
-          - { language: markdown,   do_report: true, do_check: true, pr_comment: true }
     uses: ffedoroff/code-ranker-ci/.github/workflows/report.yml@v1
-    with:
-      language: ${{ matrix.language }}
-      do_report: ${{ matrix.do_report }}     # advisory HTML report (never fails CI)
-      do_check: ${{ matrix.do_check }}       # lint gate: red job on violations (see note)
-      pr_comment: ${{ matrix.pr_comment }}   # contribute to the single PR comment
+    # with:
+    #   do_check: false     # set to make code-ranker advisory-only (never reds the job)
     permissions:
-      id-token: write           # OIDC, keyless -- no secret needed
-      contents: read            # checkout your code for analysis
-      pull-requests: write      # sticky comment with the report link
-  # Aggregates every language's result into ONE PR comment (updated in place).
-  comment:
-    needs: code-ranker
-    if: ${{ always() && github.event_name == 'pull_request' }}
-    uses: ffedoroff/code-ranker-ci/.github/workflows/comment.yml@v1
-    permissions:
-      pull-requests: write      # post / update the single comment
-      actions: read             # download the per-language staged artifacts
+      id-token: write        # OIDC, keyless -- no secret needed
+      contents: read         # checkout your code for analysis
+      pull-requests: write   # the single sticky comment with the report + diff
 
 # -----------------------------------------------------------------------------
 # do_check / branch protection
 # -----------------------------------------------------------------------------
-# With `do_check: true`, a language's job goes RED when code-ranker finds
-# violations. This shows a failing check on the PR but does NOT block merging
-# unless you mark `code-ranker (<language>)` as a REQUIRED status check in your
-# branch protection / ruleset. Set `do_check: false` to keep a language advisory.
+# By default the lint gate runs: the job goes RED when code-ranker finds
+# violations. That shows a failing check on the PR but does NOT block merging
+# unless you mark `code-ranker` as a REQUIRED status check in your branch
+# protection / ruleset. Pass `do_check: false` to keep it advisory-only.
 #
 # -----------------------------------------------------------------------------
 # OPTIONAL: fork-PR support
 # -----------------------------------------------------------------------------
 # Fork PRs cannot get an OIDC id-token, so the report cannot be uploaded for them
-# (the check gate still runs locally). To support uploads from fork PRs you need
-# TWO extra pieces:
-#
-#   1) A phase-A step that, for fork PRs, publishes the generated HTML as an
-#      ORDINARY artifact (no OIDC, no secrets). Because the analysis runs inside
-#      the reusable workflow, the simplest way is to NOT use `uses:` for the job
-#      and inline the steps; most users do not need fork support.
-#
-#      If you inline the job, append these two steps after the analysis step
-#      (they only fire for fork PRs, where the same-repo upload was skipped):
-#
-#        - name: Stage fork-PR report
-#          if: >-
-#            github.event_name == 'pull_request' &&
-#            github.event.pull_request.head.repo.full_name != github.repository
-#          run: |
-#            mkdir -p ck-fork-out
-#            cp "report-${H}.html" "ck-fork-out/report-${H}.html"
-#        - name: Upload fork-PR artifact (no OIDC, no secrets)
-#          if: >-
-#            github.event_name == 'pull_request' &&
-#            github.event.pull_request.head.repo.full_name != github.repository
-#          uses: actions/upload-artifact@v4
-#          with:
-#            name: code-ranker-fork-report
-#            path: ck-fork-out/
-#            if-no-files-found: error
-#            retention-days: 1
-#
-#   2) A SECOND workflow file `.github/workflows/code-ranker-fork.yml` in this
-#      repo that runs in the privileged base context via `workflow_run` and
-#      delegates to the fork handler. It MUST live in this repo (a workflow_run
-#      trigger can only listen to workflows in the same repo). NEVER use
-#      pull_request_target. Contents:
-#
-#        name: code-ranker (fork PR)
-#        on:
-#          workflow_run:
-#            workflows: ["code-ranker"]   # must match `name:` above
-#            types: [completed]
-#        jobs:
-#          publish:
-#            if: >-
-#              github.event.workflow_run.event == 'pull_request' &&
-#              github.event.workflow_run.head_repository.full_name != github.repository
-#            uses: ffedoroff/code-ranker-ci/.github/workflows/fork-report.yml@v1
-#            permissions:
-#              id-token: write          # OIDC -- available in base context
-#              pull-requests: write     # sticky comment into the fork PR
-#              actions: read            # download the artifact from the run
-#              contents: read
+# (the check gate still runs locally). Full fork support uses a second
+# `workflow_run` workflow in the privileged base context -- see fork-report.yml in
+# ffedoroff/code-ranker-ci and docs. NEVER use pull_request_target.
