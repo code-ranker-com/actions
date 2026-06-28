@@ -197,10 +197,12 @@ jobs:
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=code-ranker-reports" | jq -r .value)
           N=$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)
+          CR_VER=$(code-ranker --version 2>/dev/null | awk '{print $2}')
           OUT=$(curl -sS -w $'\n%{http_code}' -X POST "$API_UPLOAD_URL" \
             -H "Authorization: Bearer $TOKEN" \
             -F "pr=${{ github.event.pull_request.number }}" \
             -F "violations=${N:-0}" \
+            -F "code_ranker_version=${CR_VER:-}" \
             -F "report=@${REPORT_FILE};type=text/html")
           CODE="${OUT##*$'\n'}"; BODY="${OUT%$'\n'*}"
           if [ "$CODE" = "200" ]; then
