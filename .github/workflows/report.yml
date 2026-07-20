@@ -4,10 +4,16 @@
 # languages in a single pass, so this is ONE job (no matrix): one analysis →
 # snapshot, from which it
 #   - generates an HTML report (a diff vs the default-branch baseline when one
-#     exists) and keyless-uploads it over OIDC (advisory);
-#   - posts ONE sticky PR comment: header (ok / N errors), a View-report button, a
-#     <details> per language (its violations + stat-diff), baseline line, AI prompt;
+#     exists) and keyless-uploads it over OIDC (advisory), together with a
+#     rendered comment body (header, View-report button, a <details> per
+#     language with its violations + stat-diff, baseline line, AI prompt);
 #   - runs the lint gate `check` (do_check) — non-zero exit reds the job.
+#
+# The PR comment itself is posted/updated by the BACKEND (the code-ranker GitHub
+# App), not by this workflow: same-repo PRs are handled when the /upload call
+# above lands, fork PRs via a `workflow_run` webhook (the backend downloads the
+# fork-report artifact itself — see the "Upload fork report artifact" step
+# below). This workflow therefore never needs `pull-requests: write`.
 #
 # Baseline = the default-branch snapshot, kept in the Actions cache (single key);
 # default-branch pushes refresh it, every branch/PR reads it (cache scope), so the
@@ -29,7 +35,9 @@ on:
         type: boolean
         default: true
       pr_comment:
-        description: Post / update the single sticky PR comment.
+        description: >-
+          Send the rendered comment body to the backend on upload, so the
+          code-ranker GitHub App posts/updates the PR comment.
         required: false
         type: boolean
         default: true
@@ -67,8 +75,9 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     # No job-level continue-on-error: advisory steps (render-diff/upload/comment)
     # opt out per-step; only the check gate (and a broken analysis) fail the job.
-    # Permissions come from the CALLER stub: id-token: write, contents: read,
-    # pull-requests: write.
+    # Permissions come from the CALLER stub: id-token: write, contents: read.
+    # No pull-requests: write is needed — the backend GitHub App posts the PR
+    # comment, not this workflow.
     steps:
       - uses: actions/checkout@v4
 
@@ -184,7 +193,37 @@ jobs:
             code-ranker check snap.json --output-format json --exit-zero > viol.json 2>/dev/null || echo '[]' > viol.json
           fi
 
+      # Helper scripts at the EXACT version of this reusable workflow. Needed
+      # BEFORE the upload below: the rendered comment body is itself uploaded
+      # as part of the /upload call (see the "comment" form field there), so it
+      # has to exist first. Built whenever it will actually be consumed: by the
+      # backend for pull_request (if pr_comment), or by the job summary for push.
+      - name: Get code-ranker-ci scripts
+        if: >-
+          (github.event_name == 'pull_request' && inputs.pr_comment)
+          || github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          repository: ffedoroff/code-ranker-ci
+          ref: ${{ github.job_workflow_sha }}
+          path: .ck-ci
+
+      # Renders comment.md with a LITERAL {{CR_REPORT_URL}} placeholder in place
+      # of the report link -- the real URL isn't known yet (upload hasn't run).
+      # The backend substitutes it when posting the PR comment; the Job summary
+      # step below substitutes it for the push case.
+      - name: Build comment
+        if: >-
+          (github.event_name == 'pull_request' && inputs.pr_comment)
+          || github.event_name == 'push'
+        continue-on-error: true
+        env:
+          URL: "{{CR_REPORT_URL}}"
+        run: bash .ck-ci/scripts/build-comment.sh
+
       # Same-repo only: fork PRs get NO id-token. Advisory: continue-on-error.
+      # For pull_request (when pr_comment is on), comment.md is attached so the
+      # backend can post it as the PR comment via the code-ranker GitHub App.
       - name: Upload to code-ranker (OIDC, keyless)
         if: >-
           inputs.do_report &&
@@ -198,27 +237,34 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=code-ranker-reports" | jq -r .value)
           N=$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)
           CR_VER=$(code-ranker --version 2>/dev/null | awk '{print $2}')
+          ARGS=(
+            -F "pr=${{ github.event.pull_request.number }}"
+            -F "violations=${N:-0}"
+            -F "code_ranker_version=${CR_VER:-}"
+            -F "report=@${REPORT_FILE};type=text/html"
+          )
+          if [ "${{ github.event_name == 'pull_request' && inputs.pr_comment }}" = "true" ] && [ -f comment.md ]; then
+            ARGS+=(-F "comment=@comment.md;type=text/markdown")
+          fi
           OUT=$(curl -sS -w $'\n%{http_code}' -X POST "$API_UPLOAD_URL" \
             -H "Authorization: Bearer $TOKEN" \
-            -F "pr=${{ github.event.pull_request.number }}" \
-            -F "violations=${N:-0}" \
-            -F "code_ranker_version=${CR_VER:-}" \
-            -F "report=@${REPORT_FILE};type=text/html")
+            "${ARGS[@]}")
           CODE="${OUT##*$'\n'}"; BODY="${OUT%$'\n'*}"
           if [ "$CODE" = "200" ]; then
             echo "url=$(printf '%s' "$BODY" | jq -r .url)" >> "$GITHUB_OUTPUT"
           elif [ "$CODE" = "403" ] && printf '%s' "$BODY" | jq -e '.error=="needs_email_verification"' >/dev/null 2>&1; then
-            echo "::error title=code-ranker not activated::$(printf '%s' "$BODY" | jq -r '.message')"
-            echo "verify_url=$(printf '%s' "$BODY" | jq -r '.dashboard_url')" >> "$GITHUB_OUTPUT"
+            MSG=$(printf '%s' "$BODY" | jq -r '.message // ""')
+            DASH_URL=$(printf '%s' "$BODY" | jq -r '.dashboard_url // empty')
+            echo "::error title=code-ranker not activated::${MSG}${DASH_URL:+ Activate here: ${DASH_URL}}"
           else
             echo "::warning title=code-ranker upload failed::HTTP ${CODE}: ${BODY}"
           fi
 
-      # Fork PRs: no id-token and a read-only token, so the OIDC upload above and
-      # the sticky comment below are both skipped. Publish the HTML as an ordinary
-      # artifact for fork-report.yml (privileged base context, via the client's
-      # workflow_run stub) to download and post. Shape: exactly one report-*.html,
-      # which fork-report.yml validates before forwarding.
+      # Fork PRs: no id-token, so the OIDC upload above is skipped. Publish the
+      # HTML as an ordinary artifact; the code-ranker backend picks it up via a
+      # `workflow_run` webhook (privileged base-repo context), uploads it, and
+      # posts the PR comment through the GitHub App. Shape: exactly one
+      # report-*.html, which the backend validates before forwarding.
       - name: Upload fork report artifact
         if: >-
           inputs.do_report && github.event_name == 'pull_request'
@@ -231,38 +277,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      # Helper scripts at the EXACT version of this reusable workflow.
-      - name: Get code-ranker-ci scripts
-        uses: actions/checkout@v4
-        with:
-          repository: ffedoroff/code-ranker-ci
-          ref: ${{ github.job_workflow_sha }}
-          path: .ck-ci
-
-      - name: Build comment
-        continue-on-error: true
-        env:
-          URL: ${{ steps.up.outputs.url }}
-          VERIFY: ${{ steps.up.outputs.verify_url }}
-        run: bash .ck-ci/scripts/build-comment.sh
-
-      # One sticky comment per PR, updated in place (fixed header). Same-repo only:
-      # fork PRs get a read-only token and cannot post -- they are handled by
-      # fork-report.yml in the privileged base context (see the fork artifact above).
-      - name: Sticky comment
-        if: >-
-          github.event_name == 'pull_request' && inputs.pr_comment
-          && hashFiles('comment.md') != ''
-          && github.event.pull_request.head.repo.full_name == github.repository
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: code-ranker
-          path: comment.md
-
       # Push: surface the same body in the job summary (no PR to comment on).
+      # comment.md still carries the literal {{CR_REPORT_URL}} placeholder (the
+      # backend substitutes it for PR comments); do the same substitution here
+      # using the URL the upload step just returned.
       - name: Job summary
         if: github.event_name == 'push' && hashFiles('comment.md') != ''
-        run: cat comment.md >> "$GITHUB_STEP_SUMMARY"
+        env:
+          REAL_URL: ${{ steps.up.outputs.url }}
+        run: |
+          sed "s|{{CR_REPORT_URL}}|${REAL_URL:-(report not uploaded)}|g" comment.md >> "$GITHUB_STEP_SUMMARY"
 
       # Default-branch pushes refresh the baseline for every other branch.
       - name: Stage new baseline (default branch)
@@ -278,7 +302,8 @@ jobs:
       # Lint gate: reds the job on violations (so it can be a required status
       # check). With a baseline it gates on REGRESSIONS only (relative ratchet:
       # new violations vs the default branch); without one, on all current
-      # violations. Reads the SAME snapshot. Runs LAST so the comment is posted.
+      # violations. Reads the SAME snapshot. Runs LAST so the report/upload/
+      # summary steps above already ran regardless of the gate's outcome.
       - name: Check (lint gate)
         if: inputs.do_check
         run: |

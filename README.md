@@ -1,6 +1,6 @@
 # code-ranker-ci
 
-Reusable GitHub Actions workflow for **code-ranker Reports**. Drop in one file, get an HTML report generated on your CI and posted as a sticky PR comment — no secrets, keyless OIDC.
+Reusable GitHub Actions workflow for **code-ranker Reports**. Drop in one file, get an HTML report generated on your CI and posted as a PR comment by the code-ranker GitHub App — no secrets, keyless OIDC.
 
 Part of the [code-ranker](https://github.com/ffedoroff/code-ranker) Reports product.
 
@@ -14,8 +14,8 @@ On every pull request (and `main` push) the workflow:
 
 1. Installs `code-ranker` (precompiled binary, seconds)
 2. Builds a self-contained HTML report for your code
-3. Uploads it keylessly via OIDC
-4. Posts a sticky PR comment with the link (updates in place, never duplicates)
+3. Uploads it keylessly via OIDC, along with the rendered comment body
+4. The code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`)
 
 Advisory mode (`continue-on-error`): never breaks your CI.
 
@@ -35,7 +35,6 @@ jobs:
     permissions:
       id-token: write        # OIDC keyless — no secret needed
       contents: read
-      pull-requests: write   # sticky comment
 ```
 
 If your default branch isn't `main`, update the `push` branches list.
@@ -58,14 +57,13 @@ For full reproducibility, pin to a SHA and use Dependabot:
 
 ## Fork PRs
 
-Forks don't receive an OIDC token from GitHub, so direct upload isn't possible. Fork support uses a separate privileged path via `workflow_run`: phase A builds the HTML as a plain artifact (no secrets); phase B runs in the base-repo context, uploads, and comments. **`pull_request_target` is never used.**
+Forks don't receive an OIDC token from GitHub, so direct upload isn't possible. Instead the workflow publishes the HTML report as a plain build artifact (no secrets), and the code-ranker backend picks it up itself via a `workflow_run` webhook, uploads it, and posts the PR comment through the GitHub App. **`pull_request_target` is never used.**
 
-Most repos don't need this. If you do — see `caller-stub.yml` comments: add an upload-artifact step and a second stub `.github/workflows/code-ranker-fork.yml` that delegates to `ffedoroff/code-ranker-ci/.github/workflows/fork-report.yml@v1`.
+No extra setup is needed in your repo for this — it works out of the box with the same stub.
 
 ## Repository files
 
 | File | Role |
 |---|---|
-| `.github/workflows/report.yml` | Reusable workflow — same-repo path |
-| `.github/workflows/fork-report.yml` | Reusable workflow — fork PR handler (phase B) |
+| `.github/workflows/report.yml` | Reusable workflow |
 | `caller-stub.yml` | Stub to copy into your repository |
