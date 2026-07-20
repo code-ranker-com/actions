@@ -214,6 +214,23 @@ jobs:
             echo "::warning title=code-ranker upload failed::HTTP ${CODE}: ${BODY}"
           fi
 
+      # Fork PRs: no id-token and a read-only token, so the OIDC upload above and
+      # the sticky comment below are both skipped. Publish the HTML as an ordinary
+      # artifact for fork-report.yml (privileged base context, via the client's
+      # workflow_run stub) to download and post. Shape: exactly one report-*.html,
+      # which fork-report.yml validates before forwarding.
+      - name: Upload fork report artifact
+        if: >-
+          inputs.do_report && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          && hashFiles(format('report-{0}.html', env.H)) != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-ranker-fork-report
+          path: report-${{ env.H }}.html
+          if-no-files-found: ignore
+          retention-days: 1
+
       # Helper scripts at the EXACT version of this reusable workflow.
       - name: Get code-ranker-ci scripts
         uses: actions/checkout@v4
@@ -229,9 +246,14 @@ jobs:
           VERIFY: ${{ steps.up.outputs.verify_url }}
         run: bash .ck-ci/scripts/build-comment.sh
 
-      # One sticky comment per PR, updated in place (fixed header).
+      # One sticky comment per PR, updated in place (fixed header). Same-repo only:
+      # fork PRs get a read-only token and cannot post -- they are handled by
+      # fork-report.yml in the privileged base context (see the fork artifact above).
       - name: Sticky comment
-        if: github.event_name == 'pull_request' && inputs.pr_comment && hashFiles('comment.md') != ''
+        if: >-
+          github.event_name == 'pull_request' && inputs.pr_comment
+          && hashFiles('comment.md') != ''
+          && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: code-ranker
