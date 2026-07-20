@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # Builds the WHOLE PR comment (v5: one report/check over all languages) from a
 # single snapshot. Reads (cwd): snap.json, baseline/snap.json (optional),
-# viol.json. Env: URL (report url), VERIFY (activation url), REPORT_KIND
-# ("diff report"|"report"). Writes: comment.md  and  errors.n (total violations).
+# viol.json. Env: URL (report url), REPORT_KIND ("diff report"|"report").
+# Writes: comment.md  and  errors.n (total violations).
+#
+# This runs BEFORE the report is uploaded, so the real report URL isn't known
+# yet: callers pass the literal placeholder string `{{CR_REPORT_URL}}` as URL,
+# and comment.md is written with that placeholder inlined into the "View
+# report" link. Whoever posts the comment (the code-ranker backend for PRs, the
+# Job summary step for pushes) substitutes the real URL in afterwards -- this
+# script never talks to the upload API and has no notion of upload failure.
 #
 # v5 snapshot nests each plugin under .languages.<lang>.graphs.<level>; violations
 # carry a .language field. The comment is one header (ok / N errors), one "View
 # report" button, a <details> per language (its violations + stat-diff), one
 # baseline line, and one AI fix prompt. Metric labels/groups/directions are read
 # from the snapshot — nothing hardcoded (see difftable.jq).
+#
+# No sticky-comment marker is written here: the backend prefixes its own
+# identifying marker when it posts/updates the PR comment.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -93,10 +103,10 @@ fi
 
 {
   # Title + report link on ONE line (the link is inlined into the H2 header).
+  # URL is normally the literal {{CR_REPORT_URL}} placeholder at this point
+  # (see the header comment above) -- whoever posts the comment fills it in.
   if [ -n "${URL:-}" ]; then
     echo "## ${HEAD} <a href=\"${URL}\" target=\"_blank\" rel=\"noopener noreferrer\">View ${KIND} ↗</a>"
-  elif [ -n "${VERIFY:-}" ]; then
-    echo "## ${HEAD} 🔒 [Activate to publish reports](${VERIFY})"
   else
     echo "## ${HEAD}"
   fi
