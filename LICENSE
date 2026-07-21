@@ -5,7 +5,7 @@ PROPRIETARY LICENSE
 Permission is hereby granted, free of charge, to any person or organization
 ("User") to use the files in this repository solely for the purpose of
 integrating their own source code repositories with the code-ranker service
-(https://github.com/ffedoroff/code-ranker).
+(https://github.com/code-ranker-com/code-ranker).
 
 Permitted use:
   - Copying and adding the provided workflow stub files to your own repositories

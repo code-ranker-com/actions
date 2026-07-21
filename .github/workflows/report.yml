@@ -1,4 +1,4 @@
-# ffedoroff/code-ranker-ci :: .github/workflows/report.yml
+# code-ranker-com/actions :: .github/workflows/report.yml
 #
 # Reusable workflow, run on the CLIENT's runner. code-ranker v5 analyzes ALL
 # languages in a single pass, so this is ONE job (no matrix): one analysis →
@@ -64,7 +64,7 @@ env:
   API_UPLOAD_URL: "https://api.code-ranker.com/upload"
   # v5.0.0 is the latest stable release, so track `releases/latest` (future v5.x
   # patches apply automatically).
-  CR_INSTALLER: "https://github.com/ffedoroff/code-ranker/releases/latest/download/code-ranker-installer.sh"
+  CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/latest/download/code-ranker-installer.sh"
 
 concurrency:
   group: code-ranker-${{ github.event.pull_request.number || github.ref }}
@@ -204,7 +204,7 @@ jobs:
           || github.event_name == 'push'
         uses: actions/checkout@v6
         with:
-          repository: ffedoroff/code-ranker-ci
+          repository: code-ranker-com/actions
           ref: ${{ github.job_workflow_sha }}
           path: .ck-ci
 

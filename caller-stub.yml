@@ -15,7 +15,7 @@ on:
   push:                     # any branch — the stat-diff baseline works everywhere
 jobs:
   code-ranker:
-    uses: ffedoroff/code-ranker-ci/.github/workflows/report.yml@v1
+    uses: code-ranker-com/actions/.github/workflows/report.yml@v1
     # with:                 # all optional; defaults shown
     #   do_report: true     # upload the HTML report (the View-report button)
     #   do_check: true      # red the job on violations (false = advisory only)

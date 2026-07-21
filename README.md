@@ -2,7 +2,7 @@
 
 Reusable GitHub Actions workflow for **code-ranker Reports**. Drop in one file, get an HTML report generated on your CI and posted as a PR comment by the code-ranker GitHub App — no secrets, keyless OIDC.
 
-Part of the [code-ranker](https://github.com/ffedoroff/code-ranker) Reports product.
+Part of the [code-ranker](https://github.com/code-ranker-com/code-ranker) Reports product.
 
 ## License
 
@@ -10,7 +10,7 @@ Proprietary. This repository may only be used to integrate your repositories wit
 
 ## How it works
 
-On every pull request (and `main` push) the workflow:
+On every pull request (and every push) the workflow:
 
 1. Installs `code-ranker` (precompiled binary, seconds)
 2. Builds a self-contained HTML report for your code
@@ -28,16 +28,16 @@ name: code-ranker
 on:
   pull_request:
   push:
-    branches: [main]
 jobs:
-  report:
-    uses: ffedoroff/code-ranker-ci/.github/workflows/report.yml@v1
+  code-ranker:
+    uses: code-ranker-com/actions/.github/workflows/report.yml@v1
     permissions:
-      id-token: write        # OIDC keyless — no secret needed
+      id-token: write          # OIDC keyless — no secret needed
       contents: read
+      security-events: write   # upload SARIF to code scanning (inline PR alerts)
 ```
 
-If your default branch isn't `main`, update the `push` branches list.
+`push` is left unfiltered on purpose: the stat-diff baseline is refreshed on your repo's actual default branch (checked at runtime), so this works out of the box whatever your default branch is called — no need to edit the trigger.
 
 > If installed via GitHub App, this file is already added by the onboarding PR.
 
@@ -53,7 +53,7 @@ The stub pins the floating major tag `@v1`. Compatible improvements (new analysi
 - Breaking changes → new major `v2`; **`v1` never breaks in place**.
 
 For full reproducibility, pin to a SHA and use Dependabot:  
-`uses: ffedoroff/code-ranker-ci/.github/workflows/report.yml@<sha>`
+`uses: code-ranker-com/actions/.github/workflows/report.yml@<sha>`
 
 ## Fork PRs
 
