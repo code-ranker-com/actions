@@ -79,7 +79,7 @@ jobs:
     # No pull-requests: write is needed — the backend GitHub App posts the PR
     # comment, not this workflow.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Default: install the prebuilt binary (seconds, no toolchain).
       - name: Install code-ranker (prebuilt binary)
@@ -139,7 +139,7 @@ jobs:
       # Default-branch baseline snapshot (single key; cache scope lets any branch/PR
       # read the default-branch cache). Empty on the first run -> diff "no baseline".
       - name: Restore baseline snapshot
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: baseline
           key: ck-baseline-${{ github.sha }}
@@ -202,7 +202,7 @@ jobs:
         if: >-
           (github.event_name == 'pull_request' && inputs.pr_comment)
           || github.event_name == 'push'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ffedoroff/code-ranker-ci
           ref: ${{ github.job_workflow_sha }}
@@ -270,7 +270,7 @@ jobs:
           inputs.do_report && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name != github.repository
           && hashFiles(format('report-{0}.html', env.H)) != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-ranker-fork-report
           path: report-${{ env.H }}.html
@@ -294,7 +294,7 @@ jobs:
         run: mkdir -p baseline && cp snap.json baseline/snap.json
       - name: Save baseline snapshot (default branch)
         if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: baseline
           key: ck-baseline-${{ github.sha }}
