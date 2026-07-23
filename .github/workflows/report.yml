@@ -7,7 +7,8 @@
 #     exists) and keyless-uploads it over OIDC (advisory), together with a
 #     rendered comment body (header, View-report button, a <details> per
 #     language with its violations + stat-diff, baseline line, AI prompt);
-#   - runs the lint gate `check` (do_check) — non-zero exit reds the job.
+#   - optionally runs the lint gate `check` (do_check, default false) — when
+#     enabled, a non-zero exit reds the job; off by default (advisory only).
 #
 # The PR comment itself is posted/updated by the BACKEND (the code-ranker GitHub
 # App), not by this workflow: same-repo PRs are handled when the /upload call
@@ -30,10 +31,14 @@ on:
         type: boolean
         default: true
       do_check:
-        description: Run the lint gate (non-zero exit reds the job). false = advisory only.
+        description: >-
+          Lint gate: fail the job when code-ranker finds violations. Default
+          false = advisory/report-only (violations still show in the PR comment
+          and code scanning, but never red the job). Set true to opt into
+          gating, and mark `code-ranker` a required check to actually block merges.
         required: false
         type: boolean
-        default: true
+        default: false
       pr_comment:
         description: >-
           Send the rendered comment body to the backend on upload, so the
