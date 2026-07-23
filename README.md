@@ -17,7 +17,9 @@ On every pull request (and every push) the workflow:
 3. Uploads it keylessly via OIDC, along with the rendered comment body
 4. The code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`)
 
-Advisory mode (`continue-on-error`): never breaks your CI.
+By default code-ranker is advisory (`do_check: false`): findings show up in the PR comment and in code scanning, but never red the job. Pass `do_check: true` — and mark `code-ranker` a required status check — to gate merges on them instead.
+
+The comment reflects the mode: advisory findings are listed neutrally (e.g. "3 findings"), a gate run marks them "error ❌" with a collapsible Violations list. Either way an AI fix-prompt is always included, and a language with nothing new to report (no findings, no real metric change) is simply omitted — no "no baseline yet" filler.
 
 ## Setup
 
@@ -39,7 +41,7 @@ jobs:
 
 `push` is left unfiltered on purpose: the stat-diff baseline is refreshed on your repo's actual default branch (checked at runtime), so this works out of the box whatever your default branch is called — no need to edit the trigger.
 
-> If installed via GitHub App, this file is already added by the onboarding PR.
+> If installed via GitHub App, the onboarding PR already adds this workflow for you — pinned to the exact release commit SHA rather than the floating `@v1` tag shown above, for a reproducible first install.
 
 ## Keyless OIDC — why no secrets
 
