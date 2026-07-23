@@ -55,6 +55,10 @@ CDATE="$(fmtdate "$(jq -r '.generated_at // ""' snap.json 2>/dev/null)")"
 CORIGIN="$(jq -r '.git.origin // ""' snap.json 2>/dev/null)"
 CCOMMIT="$(jq -r '.git.commit // ""' snap.json 2>/dev/null)"
 KIND="${REPORT_KIND:-report}"
+# Gate mode: the caller ran `check` as a lint gate (do_check: true). Only then do
+# we use the "error ❌ / Violations" framing (the job actually reds on them). When
+# off (advisory, the default), findings are shown neutrally as "findings".
+GATE=0; [ "${DO_CHECK:-}" = "true" ] && GATE=1
 
 # Normalize violations to a flat array once.
 jq 'if type=="array" then . else (.violations // []) end' viol.json > _viol.json 2>/dev/null || echo '[]' > _viol.json
@@ -75,8 +79,13 @@ case "${VERDICT:-}" in
   *)        VE="" ;;            # neutral / unset → no verdict noise
 esac
 if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-  if [ -f baseline/snap.json ]; then W=new; else W=errors; [ "$TOTAL" -eq 1 ] && W=error; fi
-  HEAD="code-ranker: ${VE:+${VE} · }${TOTAL} ${W} ❌"
+  if [ "$GATE" -eq 1 ]; then
+    if [ -f baseline/snap.json ]; then W=new; else W=errors; [ "$TOTAL" -eq 1 ] && W=error; fi
+    HEAD="code-ranker: ${VE:+${VE} · }${TOTAL} ${W} ❌"
+  else
+    F=findings; [ "$TOTAL" -eq 1 ] && F=finding
+    HEAD="code-ranker: ${VE:+${VE} · }${TOTAL} ${F}"
+  fi
 elif [ -n "$VE" ]; then
   HEAD="code-ranker: ${VE}"
 else
@@ -114,7 +123,10 @@ fi
 
   for lang in $langs; do
     n="$(jq --arg l "$lang" '[.[] | select(.language == $l)] | length' _viol.json 2>/dev/null || echo 0)"
-    # stat-diff for this language (computed first so a no-change language can be skipped).
+    # stat-diff for this language. Only meaningful with a baseline; a "no metric
+    # changes" result (or no baseline at all) counts as "nothing to show" here —
+    # we never print "No baseline yet." / "No metric changes." noise.
+    DIFF=""; has_diff=0
     if [ -f baseline/snap.json ]; then
       DIFF="$(jq -rn \
         --argjson counts "$(countrows "$lang")" \
@@ -125,25 +137,31 @@ fi
         --arg bhdr "$( [ -n "${CORIGIN}" ] && [ -n "${bbranch:-}" ] && printf '[Baseline](%s/tree/%s)' "$CORIGIN" "$bbranch" || printf 'Baseline')" \
         --arg chdr "$( [ -n "${CORIGIN}" ] && [ -n "${cbranch:-}" ] && printf '[Current](%s/tree/%s)' "$CORIGIN" "$cbranch" || printf 'Current')" \
         -f "$HERE/difftable.jq")"
-    else
-      DIFF="_No baseline yet._"
+      [ -n "$DIFF" ] && [ "$DIFF" != "_No metric changes._" ] && has_diff=1
     fi
-    # Skip a language with nothing to report: no violations AND no metric/count
-    # changes vs the baseline (keeps the comment focused on what actually moved).
-    if [ "${n:-0}" -eq 0 ] 2>/dev/null && [ "$DIFF" = "_No metric changes._" ]; then
+    # Skip a language with nothing to show: no violations AND no real metric diff.
+    if [ "${n:-0}" -eq 0 ] 2>/dev/null && [ "$has_diff" -eq 0 ]; then
       continue
     fi
+    # Per-language summary. Gate → "N error(s) ❌"; advisory → neutral "N finding(s)";
+    # a clean language shown only for its metric diff gets "ok" (gate) or just its name.
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-      w=errors; [ "$n" -eq 1 ] && w=error
-      sum="${lang}: ${n} ${w} ❌"
+      if [ "$GATE" -eq 1 ]; then
+        w=errors; [ "$n" -eq 1 ] && w=error
+        sum="${lang}: ${n} ${w} ❌"
+      else
+        f=findings; [ "$n" -eq 1 ] && f=finding
+        sum="${lang}: ${n} ${f}"
+      fi
     else
-      sum="${lang}: ok"
+      if [ "$GATE" -eq 1 ]; then sum="${lang}: ok"; else sum="${lang}"; fi
     fi
     echo "<details><summary>${sum}</summary>"
     echo
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-      echo "<details><summary>Violations: ${n}</summary>"
-      echo
+      # Gate wraps the list in a "Violations: N" collapsible; advisory lists the
+      # findings directly (no "Violations" label).
+      [ "$GATE" -eq 1 ] && { echo "<details><summary>Violations: ${n}</summary>"; echo; }
       jq -r --arg l "$lang" --arg origin "$CORIGIN" --arg sha "$CCOMMIT" '
         (($origin != "") and ($sha != "")) as $hl
         | [.[] | select(.language == $l)][]
@@ -154,27 +172,29 @@ fi
         | (.message | if $hl then gsub("\\{target\\}/(?<p>[^\\s]+)"; "[\(.p)](" + $origin + "/blob/" + $sha + "/" + .p + ")") else gsub("\\{target\\}/"; "") end) as $msg
         | "- \($loclink) — \($msg)"' _viol.json 2>/dev/null | head -20
       echo
-      echo "</details>"
+      [ "$GATE" -eq 1 ] && { echo "</details>"; echo; }
+    fi
+    # Metric diff table (only when there is a real one; never "No baseline yet.").
+    if [ "$has_diff" -eq 1 ]; then
+      echo "$DIFF"
       echo
     fi
-    echo "$DIFF"
-    echo
     echo "</details>"
     echo
   done
 
-  # AI fix prompt first, then the baseline/updated line at the very bottom.
-  if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
-    echo "<details>"
-    echo "<summary>🤖 Prompt for fix all with AI</summary>"
-    echo
-    echo '```'
-    echo "Run code-ranker check --top 1 and follow instructions to fix error. Loop until no errors left."
-    echo '```'
-    echo
-    echo "</details>"
-    echo
-  fi
+  # AI fix prompt (always shown), then the baseline/updated line at the very bottom.
+  # Single-quoted so the backticks around the command are emitted literally, not
+  # run by the shell.
+  echo "<details>"
+  echo "<summary>🤖 Prompt for fix all with AI</summary>"
+  echo
+  echo '```'
+  echo 'Run `code-ranker check --top 1` and follow instructions to fix error. Loop until no errors left.'
+  echo '```'
+  echo
+  echo "</details>"
+  echo
   echo "<sub>${INFO}</sub>"
 } > comment.md
 

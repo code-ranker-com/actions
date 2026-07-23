@@ -224,6 +224,8 @@ jobs:
         continue-on-error: true
         env:
           URL: "{{CR_REPORT_URL}}"
+          # Advisory (do_check=false) → neutral "findings"; gate (true) → "error ❌".
+          DO_CHECK: ${{ inputs.do_check }}
         run: bash .ck-ci/scripts/build-comment.sh
 
       # Same-repo only: fork PRs get NO id-token. Advisory: continue-on-error.
