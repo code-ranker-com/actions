@@ -6,9 +6,12 @@
 #
 # code-ranker v5 analyzes ALL languages in one pass, so this is a single job: one
 # report + one check for the whole repo. The PR comment is posted/updated by the
-# code-ranker GitHub App (backend), not by this workflow.
+# code-ranker GitHub App (backend) after it downloads the `code-ranker-report`
+# artifact via a webhook -- not by this workflow.
 #
-# No secrets are required: identity is proven via keyless OIDC.
+# No secrets, no OIDC: the workflow only ever needs `contents: read` to check out
+# your code. It never mints an id-token and never writes to the Security tab
+# unless you explicitly opt in (see `sarif` below).
 name: code-ranker
 on:
   pull_request:
@@ -17,31 +20,48 @@ jobs:
   code-ranker:
     uses: code-ranker-com/actions/.github/workflows/report.yml@v1
     # with:                 # all optional; defaults shown
-    #   do_report: true     # upload the HTML report (the View-report button)
+    #   do_report: true     # publish report + comment.md + snap.json as the code-ranker-report artifact
     #   do_check: false     # gate: red the job on violations (default false = advisory)
-    #   pr_comment: true    # send the comment body on upload, for the GitHub App to post
-    #   sarif: true         # upload SARIF to code scanning (inline PR alerts)
+    #   pr_comment: true    # include comment.md in the artifact, for the GitHub App to post
+    #   sarif: false        # opt-in: upload SARIF to code scanning (inline PR alerts) -- see below
     #   runs_on: ubuntu-22.04
     permissions:
-      id-token: write          # OIDC, keyless -- no secret needed
-      contents: read           # checkout your code for analysis
-      security-events: write   # upload SARIF to code scanning (inline PR alerts)
+      contents: read           # checkout your code for analysis -- the ONLY permission needed by default
 
 # -----------------------------------------------------------------------------
 # do_check / branch protection
 # -----------------------------------------------------------------------------
 # By default code-ranker is ADVISORY: violations show up in the PR comment and
-# code scanning, but never red the job (do_check defaults to false). To turn it
-# into a gate, pass `do_check: true` — the job then goes RED on violations. That
-# still does NOT block merging unless you also mark `code-ranker` as a REQUIRED
-# status check in your branch protection / ruleset.
+# (if you opted into sarif) code scanning, but never red the job (do_check
+# defaults to false). To turn it into a gate, pass `do_check: true` — the job
+# then goes RED on violations. That still does NOT block merging unless you
+# also mark `code-ranker` as a REQUIRED status check in your branch protection
+# / ruleset.
+#
+# -----------------------------------------------------------------------------
+# SARIF / code scanning (opt-in)
+# -----------------------------------------------------------------------------
+# `sarif` defaults to false: by default this workflow does NOT write to your
+# repo's Security tab and does NOT need `security-events: write`. To get inline
+# code-scanning alerts on the PR diff, opt in explicitly with BOTH of:
+#
+#   jobs:
+#     code-ranker:
+#       uses: code-ranker-com/actions/.github/workflows/report.yml@v1
+#       with:
+#         sarif: true
+#       permissions:
+#         contents: read
+#         security-events: write   # required only when sarif: true
 #
 # -----------------------------------------------------------------------------
 # PR comments, incl. fork PRs
 # -----------------------------------------------------------------------------
 # The PR comment is posted/updated by the code-ranker GitHub App, not by this
 # workflow -- that's why no `pull-requests: write` permission is requested
-# above. Same-repo PRs are commented on as soon as the /upload call lands; fork
-# PRs are handled automatically via a webhook on the backend (it downloads the
-# report artifact this workflow publishes for them) -- no extra stub, no extra
-# permissions, and NEVER `pull_request_target`.
+# above. This workflow never mints an OIDC token and never calls an /upload API
+# directly: it always publishes the `code-ranker-report` build artifact
+# (report + comment.md + snap.json), for BOTH same-repo and fork PRs alike. The
+# backend picks that artifact up itself via a `workflow_run` webhook, uploads
+# the report, and posts the comment through the GitHub App -- no extra stub, no
+# extra permissions, and NEVER `pull_request_target`.
