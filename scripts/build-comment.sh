@@ -110,6 +110,13 @@ else
   INFO="updated ${CDATE}"
 fi
 
+# Track whether the comment has anything worth posting: a finding, a real metric
+# diff, or an improved/degraded verdict. A run with none of these is a "clean" run
+# and gets no PR comment at all (see the sentinel written after the body).
+SUBSTANTIVE=0
+[ "${TOTAL:-0}" -gt 0 ] 2>/dev/null && SUBSTANTIVE=1
+[ -n "$VE" ] && SUBSTANTIVE=1
+
 {
   # Title + report link on ONE line (the link is inlined into the H2 header).
   # URL is normally the literal {{CR_REPORT_URL}} placeholder at this point
@@ -143,6 +150,7 @@ fi
     if [ "${n:-0}" -eq 0 ] 2>/dev/null && [ "$has_diff" -eq 0 ]; then
       continue
     fi
+    SUBSTANTIVE=1  # this language contributes a finding or a real metric diff
     # Per-language summary. Gate → "N error(s) ❌"; advisory → neutral "N finding(s)";
     # a clean language shown only for its metric diff gets "ok" (gate) or just its name.
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
@@ -200,5 +208,13 @@ fi
   # Baseline/updated line at the very bottom (always shown).
   echo "<sub>${INFO}</sub>"
 } > comment.md
+
+# Clean run (no findings, no metric changes, no verdict): replace the rendered
+# body with a sentinel so whoever posts (the backend for PR comments, the job
+# summary for pushes) skips the message entirely. The report is still published
+# and reachable from the dashboard — a green run just doesn't nag the PR.
+if [ "${SUBSTANTIVE:-0}" -eq 0 ]; then
+  printf '%s\n' '<!-- code-ranker:no-comment -->' > comment.md
+fi
 
 echo "${TOTAL:-0}" > errors.n

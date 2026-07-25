@@ -272,7 +272,13 @@ jobs:
       - name: Job summary
         if: github.event_name == 'push' && hashFiles('comment.md') != ''
         run: |
-          sed "s|{{CR_REPORT_URL}}|(report will appear via the code-ranker app)|g" comment.md >> "$GITHUB_STEP_SUMMARY"
+          # A clean run renders comment.md as the no-comment sentinel; show a
+          # one-liner instead of the (invisible) sentinel HTML comment.
+          if grep -q "code-ranker:no-comment" comment.md; then
+            echo "code-ranker: clean run — no findings or metric changes." >> "$GITHUB_STEP_SUMMARY"
+          else
+            sed "s|{{CR_REPORT_URL}}|(report will appear via the code-ranker app)|g" comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # Every push refreshes its own branch's baseline, keyed by branch name, so a
       # PR into any branch (not just the default) diffs against that branch's real
