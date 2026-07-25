@@ -183,18 +183,21 @@ fi
     echo
   done
 
-  # AI fix prompt (always shown), then the baseline/updated line at the very bottom.
-  # Single-quoted so the backticks around the command are emitted literally, not
-  # run by the shell.
-  echo "<details>"
-  echo "<summary>🤖 Prompt for fix all with AI</summary>"
-  echo
-  echo '```'
-  echo 'Run `code-ranker check --top 1` and follow instructions to fix error. Loop until no errors left.'
-  echo '```'
-  echo
-  echo "</details>"
-  echo
+  # AI fix prompt — only when there is something to fix. A clean run (no findings)
+  # has nothing to prompt for, so the section is skipped entirely. Single-quoted so
+  # the backticks around the command are emitted literally, not run by the shell.
+  if [ "${TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+    echo "<details>"
+    echo "<summary>🤖 Prompt for fix all with AI</summary>"
+    echo
+    echo '```'
+    echo 'Run `code-ranker check --top 1` and follow instructions to fix error. Loop until no errors left.'
+    echo '```'
+    echo
+    echo "</details>"
+    echo
+  fi
+  # Baseline/updated line at the very bottom (always shown).
   echo "<sub>${INFO}</sub>"
 } > comment.md
 
