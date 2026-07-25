@@ -15,11 +15,12 @@
 # it downloads the `code-ranker-report` artifact via a `workflow_run` webhook and
 # posts the comment — same-repo and fork PRs handled identically.
 #
-# Baseline = the default-branch snapshot in the Actions cache (single key);
-# default-branch pushes refresh it, every branch/PR reads it, so the stat-diff
-# works on any branch. The client grants only `contents: read`
-# (+ `security-events: write` when `sarif: true`) and pins this stub to an
-# immutable commit SHA.
+# Baseline = the tip snapshot of the PR's base branch (for a push, that branch's
+# own previous tip), kept per branch in the Actions cache. There is no
+# cross-branch fallback: a branch with no baseline yet gets a report without a
+# diff rather than a diff against the wrong branch. The client grants only
+# `contents: read` (+ `security-events: write` when `sarif: true`) and pins this
+# stub to an immutable commit SHA.
 name: code-ranker
 
 on:
@@ -74,9 +75,10 @@ on:
         default: false
 
 env:
-  # v5.0.0 is the latest stable release, so track `releases/latest` (future v5.x
-  # patches apply automatically).
-  CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/latest/download/code-ranker-installer.sh"
+  # Pinned to a specific code-ranker CLI release so this workflow's behavior is
+  # deterministic. Bump the tag here together with each report.yml release that
+  # needs a newer CLI.
+  CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/download/v5.0.4/code-ranker-installer.sh"
 
 concurrency:
   group: code-ranker-${{ github.event.pull_request.number || github.ref }}
@@ -90,7 +92,7 @@ jobs:
     # from the CALLER stub: `contents: read` by default; `security-events: write`
     # only when the caller opts into `sarif: true`.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # Default: install the prebuilt binary (seconds, no toolchain).
       - name: Install code-ranker (prebuilt binary)
@@ -105,7 +107,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Rust cache (source build)
         if: inputs.install_from_source
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Build code-ranker from source
         if: inputs.install_from_source
         run: |
@@ -146,19 +148,25 @@ jobs:
           (github.event_name == 'push'
            || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           sarif_file: report-${{ env.H }}.sarif
 
-      # Default-branch baseline snapshot (single key; cache scope lets any branch/PR
-      # read the default-branch cache). Empty on the first run -> diff "no baseline".
+      # Baseline = the tip snapshot of THIS PR's base branch (for a push: the
+      # branch's own previous tip). No cross-branch fallback: if the base branch
+      # has no baseline yet, we render a "no baseline" report rather than diff
+      # against the wrong branch. The `-${{ github.sha }}` key never matches (it
+      # exists only to satisfy the action) so restore resolves via the branch-scoped
+      # restore-keys prefix. Actions cache scope lets a run read its base branch
+      # cache with no extra token — this is why the caller stub needs only
+      # `contents: read`.
       - name: Restore baseline snapshot
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
-          key: ck-baseline-${{ github.sha }}
+          key: ck-baseline-${{ github.base_ref || github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ck-baseline-
+            ck-baseline-${{ github.base_ref || github.ref_name }}-
 
       # Incompatible snapshot schema major -> drop the baseline so the diff falls
       # back to "no baseline" instead of producing misleading numbers.
@@ -216,7 +224,7 @@ jobs:
         if: >-
           (github.event_name == 'pull_request' && inputs.pr_comment)
           || github.event_name == 'push'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: code-ranker-com/actions
           ref: ${{ github.job_workflow_sha }}
@@ -247,7 +255,7 @@ jobs:
       - name: Upload code-ranker-report artifact
         if: inputs.do_report && hashFiles(env.REPORT_FILE) != ''
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: code-ranker-report
           path: |
@@ -266,16 +274,19 @@ jobs:
         run: |
           sed "s|{{CR_REPORT_URL}}|(report will appear via the code-ranker app)|g" comment.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Default-branch pushes refresh the baseline for every other branch.
-      - name: Stage new baseline (default branch)
-        if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
+      # Every push refreshes its own branch's baseline, keyed by branch name, so a
+      # PR into any branch (not just the default) diffs against that branch's real
+      # tip. Short-lived branches leave a tiny snap.json entry that LRU eviction
+      # reaps; the default branch is always kept warm as the universal fallback.
+      - name: Stage new baseline
+        if: github.event_name == 'push'
         run: mkdir -p baseline && cp snap.json baseline/snap.json
-      - name: Save baseline snapshot (default branch)
-        if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
-        uses: actions/cache/save@v6
+      - name: Save baseline snapshot
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
-          key: ck-baseline-${{ github.sha }}
+          key: ck-baseline-${{ github.ref_name }}-${{ github.sha }}
 
       # Lint gate: reds the job on violations (so it can be a required status
       # check). With a baseline it gates on REGRESSIONS only (relative ratchet:
