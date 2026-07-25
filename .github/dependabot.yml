@@ -1,0 +1,15 @@
+# This repo is the reusable workflow itself — its only dependencies are the
+# GitHub Actions used inside report.yml (all SHA-pinned with `# vX` comments,
+# which Dependabot uses to bump each pin to the latest release's SHA).
+#
+# NOTE: the CLI installer (`CR_INSTALLER` in report.yml) is pinned to a release
+# URL, not a package Dependabot manages — bump it by hand when cutting a release.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
