@@ -19,8 +19,9 @@
 # own previous tip), kept per branch in the Actions cache. There is no
 # cross-branch fallback: a branch with no baseline yet gets a report without a
 # diff rather than a diff against the wrong branch. The client grants only
-# `contents: read` (+ `security-events: write` when `sarif: true`) and pins this
-# stub to an immutable commit SHA.
+# `contents: read` (+ `security-events: write` when `sarif: true`). The copy-paste
+# stub tracks the `@v1` tag; the App-onboarding PR instead pins it to an immutable
+# commit SHA.
 name: code-ranker
 
 on:
