@@ -20,7 +20,7 @@ jobs:
   code-ranker:
     uses: code-ranker-com/actions/.github/workflows/report.yml@v1
     # with:                 # all optional; defaults shown
-    #   do_report: true     # publish report + comment.md + snap.json as the code-ranker-report artifact
+    #   do_report: true     # publish report + comment.md + snap.json + viol.json as the code-ranker-report artifact
     #   do_check: false     # gate: red the job on violations (default false = advisory)
     #   pr_comment: true    # include comment.md in the artifact, for the GitHub App to post
     #   sarif: false        # opt-in: upload SARIF to code scanning (inline PR alerts) -- see below
@@ -61,7 +61,7 @@ jobs:
 # workflow -- that's why no `pull-requests: write` permission is requested
 # above. This workflow never mints an OIDC token and never calls an /upload API
 # directly: it always publishes the `code-ranker-report` build artifact
-# (report + comment.md + snap.json), for BOTH same-repo and fork PRs alike. The
-# backend picks that artifact up itself via a `workflow_run` webhook, uploads
-# the report, and posts the comment through the GitHub App -- no extra stub, no
-# extra permissions, and NEVER `pull_request_target`.
+# (report + comment.md + snap.json + viol.json), for BOTH same-repo and fork
+# PRs alike. The backend picks that artifact up itself via a `workflow_run`
+# webhook, uploads the report, and posts the comment through the GitHub App --
+# no extra stub, no extra permissions, and NEVER `pull_request_target`.
