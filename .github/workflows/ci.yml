@@ -31,7 +31,7 @@ jobs:
     name: actionlint + YAML sanity
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # actionlint has no official Action from rhysd; installing the released
       # binary directly and verifying its sha256 (from the release's own
@@ -87,7 +87,7 @@ jobs:
     name: shell static analysis
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: bash -n (syntax)
         run: |
@@ -111,7 +111,7 @@ jobs:
     name: build-comment.sh + HAS_LANGS + referential integrity
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Only needed to extract the HAS_LANGS jq filter live out of report.yml's
       # YAML (tests/lib/extract_has_langs_expr.py) -- everything else in
