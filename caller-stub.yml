@@ -1,8 +1,9 @@
 # .github/workflows/code-ranker.yml
 #
-# Thin caller stub. This is the EXACT file the code-ranker onboarding PR adds for
-# you -- all real logic lives in the reusable workflow pinned at @v1, so you never
-# edit it. We ship updates by moving the v1 tag.
+# Thin caller stub. This is the file the dashboard's setup links prefill for you
+# (and the one to copy-paste by hand) -- all real logic lives in the reusable
+# workflow pinned at @v1, so you never edit it. We ship updates by moving the v1
+# tag; the dashboard also offers an immutable commit-SHA pin instead.
 #
 # code-ranker v5 analyzes ALL languages in one pass, so this is a single job: one
 # report + one check for the whole repo. The PR comment is posted/updated by the

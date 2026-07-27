@@ -39,7 +39,7 @@ jobs:
 
 `push` is left unfiltered on purpose: every push refreshes that branch's own baseline snapshot, cached under its branch name. A PR diffs against its actual base branch's baseline — whatever that branch is called, not just your default — and a push refreshes the pushed-to branch's own baseline the same way. There's no cross-branch fallback: a branch (or PR base) with no baseline yet renders a report without a diff rather than diffing against the wrong branch.
 
-> If installed via GitHub App, the onboarding PR already adds this workflow for you — pinned to the exact release commit SHA rather than the floating `@v1` tag shown above, for a reproducible first install.
+> If installed via the GitHub App, the [dashboard](https://dashboard.code-ranker.com) offers one-click setup links for each repository that open GitHub's file editor with this workflow prefilled — choose the floating `@v1` (auto-updates) or the exact release commit SHA (immutable, Dependabot-bumpable). You review and commit the file yourself; the App has no write access to your code.
 
 ## No secrets, no OIDC
 
