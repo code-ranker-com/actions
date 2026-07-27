@@ -138,6 +138,24 @@ jobs:
           echo "REPORT_FILE=report-${H}.html" >> "$GITHUB_ENV"
           echo "REPORT_KIND=report" >> "$GITHUB_ENV"
 
+      # A repo with no supported language (docs-only, scaffolding, a brand-new
+      # empty repo) still produces a valid — but empty — snapshot: code-ranker
+      # >= 5.0.4 exits 0 there instead of erroring. Everything below is then
+      # pointless noise, and staging that empty snapshot as the new baseline would
+      # silently destroy a good one, so gate the rest of the job on having
+      # analyzed something. Checks both shapes (`plugins` list, `languages` map)
+      # so it can never read "empty" on a healthy snapshot.
+      - name: Detect empty analysis
+        run: |
+          set -uo pipefail
+          if jq -e '(((.plugins // []) | length) > 0) or (((.languages // {}) | length) > 0)' \
+               snap.json >/dev/null 2>&1; then
+            echo "HAS_LANGS=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_LANGS=false" >> "$GITHUB_ENV"
+            echo "::notice title=code-ranker::no supported language detected — nothing to analyze"
+          fi
+
       # Opt-in (sarif: false by default) — needs the caller's `security-events:
       # write` permission, which is NOT granted unless they explicitly ask for
       # it. Inline alerts in the PR diff + Security → Code scanning. Same-repo
@@ -145,7 +163,7 @@ jobs:
       # the job.
       - name: Upload SARIF to code scanning
         if: >-
-          always() && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
+          always() && env.HAS_LANGS == 'true' && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
           (github.event_name == 'push'
            || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
@@ -162,6 +180,7 @@ jobs:
       # cache with no extra token — this is why the caller stub needs only
       # `contents: read`.
       - name: Restore baseline snapshot
+        if: env.HAS_LANGS == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
@@ -172,6 +191,7 @@ jobs:
       # Incompatible snapshot schema major -> drop the baseline so the diff falls
       # back to "no baseline" instead of producing misleading numbers.
       - name: Check baseline version compatibility
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -187,6 +207,7 @@ jobs:
       # Diff HTML report from the two snapshots (no re-analysis; --baseline emits a
       # *-diff.html). The button then offers the diff.
       - name: Render diff report
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -206,6 +227,7 @@ jobs:
       # Without a baseline, it's a plain array of the current violations (review).
       # --exit-zero so this advisory step never fails.
       - name: Collect violations
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -223,8 +245,9 @@ jobs:
       # backend for pull_request (if pr_comment), or by the job summary for push.
       - name: Get code-ranker-ci scripts
         if: >-
-          (github.event_name == 'pull_request' && inputs.pr_comment)
-          || github.event_name == 'push'
+          env.HAS_LANGS == 'true' &&
+          ((github.event_name == 'pull_request' && inputs.pr_comment)
+           || github.event_name == 'push')
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: code-ranker-com/actions
@@ -239,8 +262,9 @@ jobs:
       # string for the push case, since there's no PR to comment on.
       - name: Build comment
         if: >-
-          (github.event_name == 'pull_request' && inputs.pr_comment)
-          || github.event_name == 'push'
+          env.HAS_LANGS == 'true' &&
+          ((github.event_name == 'pull_request' && inputs.pr_comment)
+           || github.event_name == 'push')
         continue-on-error: true
         env:
           URL: "{{CR_REPORT_URL}}"
@@ -254,7 +278,7 @@ jobs:
       # comment.md, snap.json, viol.json) are what the backend expects; some may
       # be absent — if-no-files-found: warn tolerates it.
       - name: Upload code-ranker-report artifact
-        if: inputs.do_report && hashFiles(env.REPORT_FILE) != ''
+        if: env.HAS_LANGS == 'true' && inputs.do_report && hashFiles(env.REPORT_FILE) != ''
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -274,8 +298,16 @@ jobs:
       # Push: surface the same body in the job summary (no PR to comment on).
       # The {{CR_REPORT_URL}} placeholder is swapped for a static note here; the
       # backend fills the real URL when it posts the PR comment from the artifact.
+      # A green job with no report and no comment reads as "silently broken",
+      # so say plainly why there was nothing to do.
+      - name: Job summary (nothing to analyze)
+        if: env.HAS_LANGS != 'true'
+        run: |
+          echo "**code-ranker:** no supported language detected — nothing to analyze." \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Job summary
-        if: github.event_name == 'push' && hashFiles('comment.md') != ''
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push' && hashFiles('comment.md') != ''
         run: |
           # A clean run renders comment.md as the no-comment sentinel; show a
           # one-liner instead of the (invisible) sentinel HTML comment.
@@ -290,10 +322,10 @@ jobs:
       # tip. Short-lived branches leave a tiny snap.json entry that LRU eviction
       # reaps; the default branch is always kept warm as the universal fallback.
       - name: Stage new baseline
-        if: github.event_name == 'push'
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push'
         run: mkdir -p baseline && cp snap.json baseline/snap.json
       - name: Save baseline snapshot
-        if: github.event_name == 'push'
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
@@ -305,7 +337,7 @@ jobs:
       # violations. Reads the SAME snapshot. Runs LAST so the report/upload/
       # summary steps above already ran regardless of the gate's outcome.
       - name: Check (lint gate)
-        if: inputs.do_check
+        if: env.HAS_LANGS == 'true' && inputs.do_check
         run: |
           if [ -f baseline/snap.json ]; then
             code-ranker check snap.json --baseline baseline/snap.json --output-format github

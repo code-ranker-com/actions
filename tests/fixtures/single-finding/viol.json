@@ -1,0 +1,1 @@
+[{"language":"python","rule":"cyclomatic.high","group":"CPX","graph":"files","location":"{target}/a.py","line":10,"message":"cyclomatic complexity 12 exceeds threshold","weight":1.0}]
