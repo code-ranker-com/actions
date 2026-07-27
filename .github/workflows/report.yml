@@ -265,7 +265,11 @@ jobs:
             snap.json
             viol.json
           if-no-files-found: warn
-          retention-days: 1
+          # Recovery window: if the backend is down when the webhook fires, the
+          # artifact is the only copy of the report. One day meant an outage
+          # longer than 24h lost every report in it, unrecoverably; two weeks
+          # survives any realistic downtime and costs the client a few tens of MB.
+          retention-days: 14
 
       # Push: surface the same body in the job summary (no PR to comment on).
       # The {{CR_REPORT_URL}} placeholder is swapped for a static note here; the
