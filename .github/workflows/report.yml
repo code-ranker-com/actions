@@ -129,11 +129,30 @@ jobs:
           echo "REPORT_FILE=report-${H}.html" >> "$GITHUB_ENV"
           echo "REPORT_KIND=report" >> "$GITHUB_ENV"
 
+      # A repo with no supported language (docs-only, scaffolding, an empty new
+      # repo) still produces a valid — but empty — snapshot: code-ranker >= 5.0.4
+      # exits 0 there instead of erroring. Everything downstream is then pointless
+      # noise, and staging that empty snapshot as the new baseline would silently
+      # destroy a good one, so gate the rest of the job on having analyzed
+      # something. Checks both shapes (`plugins` list, `languages` map) so it
+      # can't accidentally read "empty" on a healthy snapshot.
+      - name: Detect empty analysis
+        run: |
+          set -uo pipefail
+          if jq -e '(((.plugins // []) | length) > 0) or (((.languages // {}) | length) > 0)' \
+               snap.json >/dev/null 2>&1; then
+            echo "HAS_LANGS=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_LANGS=false" >> "$GITHUB_ENV"
+            echo "::notice title=code-ranker::no supported language detected — nothing to analyze"
+          fi
+
       # Inline alerts in the PR diff + Security → Code scanning. Same-repo only
       # (fork PRs get a read-only token); advisory — a miss never fails the job.
       - name: Upload SARIF to code scanning
         if: >-
-          always() && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
+          always() && env.HAS_LANGS == 'true'
+          && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
           (github.event_name == 'push'
            || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
@@ -144,6 +163,7 @@ jobs:
       # Default-branch baseline snapshot (single key; cache scope lets any branch/PR
       # read the default-branch cache). Empty on the first run -> diff "no baseline".
       - name: Restore baseline snapshot
+        if: env.HAS_LANGS == 'true'
         uses: actions/cache/restore@v6
         with:
           path: baseline
@@ -154,6 +174,7 @@ jobs:
       # Incompatible snapshot schema major -> drop the baseline so the diff falls
       # back to "no baseline" instead of producing misleading numbers.
       - name: Check baseline version compatibility
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -169,6 +190,7 @@ jobs:
       # Diff HTML report from the two snapshots (no re-analysis; --baseline emits a
       # *-diff.html). The button then offers the diff.
       - name: Render diff report
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -188,6 +210,7 @@ jobs:
       # Without a baseline, it's a plain array of the current violations (review).
       # --exit-zero so this advisory step never fails.
       - name: Collect violations
+        if: env.HAS_LANGS == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -205,8 +228,9 @@ jobs:
       # backend for pull_request (if pr_comment), or by the job summary for push.
       - name: Get code-ranker-ci scripts
         if: >-
-          (github.event_name == 'pull_request' && inputs.pr_comment)
-          || github.event_name == 'push'
+          env.HAS_LANGS == 'true' &&
+          ((github.event_name == 'pull_request' && inputs.pr_comment)
+           || github.event_name == 'push')
         uses: actions/checkout@v6
         with:
           repository: code-ranker-com/actions
@@ -219,8 +243,9 @@ jobs:
       # step below substitutes it for the push case.
       - name: Build comment
         if: >-
-          (github.event_name == 'pull_request' && inputs.pr_comment)
-          || github.event_name == 'push'
+          env.HAS_LANGS == 'true' &&
+          ((github.event_name == 'pull_request' && inputs.pr_comment)
+           || github.event_name == 'push')
         continue-on-error: true
         env:
           URL: "{{CR_REPORT_URL}}"
@@ -233,7 +258,7 @@ jobs:
       # backend can post it as the PR comment via the code-ranker GitHub App.
       - name: Upload to code-ranker (OIDC, keyless)
         if: >-
-          inputs.do_report &&
+          env.HAS_LANGS == 'true' && inputs.do_report &&
           (github.event.pull_request.head.repo.full_name == github.repository
            || github.event_name == 'push')
         id: up
@@ -274,7 +299,8 @@ jobs:
       # report-*.html, which the backend validates before forwarding.
       - name: Upload fork report artifact
         if: >-
-          inputs.do_report && github.event_name == 'pull_request'
+          env.HAS_LANGS == 'true'
+          && inputs.do_report && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name != github.repository
           && hashFiles(format('report-{0}.html', env.H)) != ''
         uses: actions/upload-artifact@v7
@@ -288,19 +314,29 @@ jobs:
       # comment.md still carries the literal {{CR_REPORT_URL}} placeholder (the
       # backend substitutes it for PR comments); do the same substitution here
       # using the URL the upload step just returned.
+      # A green job with no report and no comment reads as "silently broken", so
+      # say plainly why there was nothing to do.
+      - name: Job summary (nothing to analyze)
+        if: env.HAS_LANGS != 'true'
+        run: |
+          echo "**code-ranker:** no supported language detected — nothing to analyze." \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Job summary
-        if: github.event_name == 'push' && hashFiles('comment.md') != ''
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push' && hashFiles('comment.md') != ''
         env:
           REAL_URL: ${{ steps.up.outputs.url }}
         run: |
           sed "s|{{CR_REPORT_URL}}|${REAL_URL:-(report not uploaded)}|g" comment.md >> "$GITHUB_STEP_SUMMARY"
 
       # Default-branch pushes refresh the baseline for every other branch.
+      # Never stage an empty snapshot: it would overwrite a good baseline and make
+      # every later PR diff against nothing ("everything is new").
       - name: Stage new baseline (default branch)
-        if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
+        if: env.HAS_LANGS == 'true' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
         run: mkdir -p baseline && cp snap.json baseline/snap.json
       - name: Save baseline snapshot (default branch)
-        if: github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
+        if: env.HAS_LANGS == 'true' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
         uses: actions/cache/save@v6
         with:
           path: baseline
@@ -312,7 +348,7 @@ jobs:
       # violations. Reads the SAME snapshot. Runs LAST so the report/upload/
       # summary steps above already ran regardless of the gate's outcome.
       - name: Check (lint gate)
-        if: inputs.do_check
+        if: env.HAS_LANGS == 'true' && inputs.do_check
         run: |
           if [ -f baseline/snap.json ]; then
             code-ranker check snap.json --baseline baseline/snap.json --output-format github
