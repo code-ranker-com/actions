@@ -1,0 +1,123 @@
+# .github/workflows/ci.yml
+#
+# Self-test CI for THIS repo (code-ranker-ci), not for code-ranker clients.
+# report.yml + scripts/*.sh run on every client's runner the moment the `v1`
+# tag moves, so a regression here ships to everyone at once -- this workflow
+# is the guard rail before that happens.
+#
+# Three independent jobs:
+#   lint-workflows -- actionlint over every workflow (incl. the copy-paste
+#                     caller-stub.yml) + a cheap YAML-parses-at-all sanity net.
+#   shellcheck      -- bash -n + shellcheck over scripts/*.sh (and this repo's
+#                     own test runner).
+#   tests           -- tests/run.sh: build-comment.sh fixtures, the HAS_LANGS
+#                     gate expression (extracted live from report.yml), and
+#                     referential integrity between report.yml/scripts/*.sh.
+#
+# Actions are pinned by commit SHA (# vX comment), matching this repo's
+# convention.
+name: ci
+
+on:
+  pull_request:
+  push: # any branch
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-workflows:
+    name: actionlint + YAML sanity
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # actionlint has no official Action from rhysd; installing the released
+      # binary directly and verifying its sha256 (from the release's own
+      # checksums.txt) is more auditable than trusting a third-party wrapper
+      # Action or curl-piping an installer script. Bump both the version and
+      # the checksum together from
+      # https://github.com/rhysd/actionlint/releases/<version>/actionlint_<version>_checksums.txt
+      - name: Install actionlint (pinned release binary, checksum-verified)
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256_LINUX_AMD64: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256_LINUX_AMD64}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" actionlint
+          install -m 0755 actionlint /usr/local/bin/actionlint
+          actionlint -version
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          # KNOWN, PRE-EXISTING issue -- not introduced by, and deliberately not
+          # silently fixed in, this PR (out of scope: no build-comment.sh/report.yml
+          # behaviour changes here beyond the optional HAS_LANGS extraction).
+          # report.yml's "Get code-ranker-ci scripts" step uses
+          # `github.job_workflow_sha` to pin the helper-scripts checkout to the
+          # exact commit of the running reusable workflow. actionlint's type
+          # checker is right to flag it: GitHub's own context schema does not
+          # define that field, and it has been reported to resolve EMPTY at
+          # runtime for a job that is itself the reusable workflow:
+          # https://github.com/actions/runner/issues/2417 (the documented
+          # replacement is the newer `job.workflow_sha` / `job.workflow_repository`
+          # context). If confirmed, the practical effect is that the "exact
+          # version" checkout silently falls back to code-ranker-com/actions'
+          # DEFAULT BRANCH instead of the @v1-pinned commit -- worth a follow-up,
+          # flagged in the PR description rather than patched here.
+          actionlint -ignore 'property "job_workflow_sha" is not defined' \
+            .github/workflows/*.yml caller-stub.yml
+
+      - name: YAML sanity (cheap net beyond actionlint's own parsing)
+        run: |
+          set -euo pipefail
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          for f in .github/workflows/*.yml caller-stub.yml; do
+            echo "yaml.safe_load: $f"
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+          done
+
+  shellcheck:
+    name: shell static analysis
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: bash -n (syntax)
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh tests/run.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      # shellcheck ships preinstalled on GitHub-hosted ubuntu runners.
+      # -S warning: passes clean today; the two SC2016 "info" hits (an
+      # intentionally single-quoted backtick command example, and an
+      # intentionally single-quoted literal "$HERE/..." grep pattern in
+      # tests/run.sh) are false positives, not worth suppressing individually.
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          shellcheck -S warning scripts/*.sh tests/run.sh
+
+  tests:
+    name: build-comment.sh + HAS_LANGS + referential integrity
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Only needed to extract the HAS_LANGS jq filter live out of report.yml's
+      # YAML (tests/lib/extract_has_langs_expr.py) -- everything else in
+      # tests/run.sh is plain bash + jq.
+      - name: Ensure PyYAML
+        run: python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+
+      - name: tests/run.sh
+        run: bash tests/run.sh

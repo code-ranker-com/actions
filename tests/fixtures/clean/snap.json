@@ -1,0 +1,24 @@
+{
+  "schema_version": "5.0",
+  "generated_at": "2026-07-20T10:00:00Z",
+  "plugins": ["python"],
+  "git": {"branch": "main", "commit": "1111111111111111111111111111111111111111", "dirty_files": 0, "origin": "https://github.com/acme/widget"},
+  "languages": {
+    "python": {
+      "graphs": {
+        "files": {
+          "node_attributes": {"cyclomatic": {"value_type":"int","label":"Cyclomatic","group":"complexity","direction":"lower_better"}},
+          "attribute_groups": {"complexity": {"label":"Complexity"}},
+          "node_kinds": {"file": {"label":"File","plural":"Files"}},
+          "nodes": [
+            {"id":"{target}/a.py","kind":"file","name":"a.py","cyclomatic":2},
+            {"id":"{target}/b.py","kind":"file","name":"b.py","cyclomatic":3}
+          ],
+          "edges": [{"source":"{target}/a.py","target":"{target}/b.py","kind":"uses"}],
+          "cycles": [],
+          "stats": {"cyclomatic": 2.5}
+        }
+      }
+    }
+  }
+}

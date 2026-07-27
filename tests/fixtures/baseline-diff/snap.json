@@ -1,0 +1,33 @@
+{
+  "schema_version": "5.0",
+  "generated_at": "2026-07-20T12:00:00Z",
+  "plugins": ["python","go"],
+  "git": {"branch": "feature-x", "commit": "2222222222222222222222222222222222222222", "dirty_files": 0, "origin": "https://github.com/acme/widget"},
+  "languages": {
+    "python": {
+      "graphs": { "files": {
+        "node_attributes": {"cyclomatic": {"value_type":"int","label":"Cyclomatic","group":"complexity","direction":"lower_better"}},
+        "attribute_groups": {"complexity": {"label":"Complexity"}},
+        "node_kinds": {"file": {"label":"File","plural":"Files"}},
+        "nodes": [
+          {"id":"{target}/a.py","kind":"file","name":"a.py","cyclomatic":5},
+          {"id":"{target}/b.py","kind":"file","name":"b.py","cyclomatic":3}
+        ],
+        "edges": [{"source":"{target}/a.py","target":"{target}/b.py","kind":"uses"}],
+        "cycles": [],
+        "stats": {"cyclomatic": 4.0}
+      }}
+    },
+    "go": {
+      "graphs": { "files": {
+        "node_attributes": {"cyclomatic": {"value_type":"int","label":"Cyclomatic","group":"complexity","direction":"lower_better"}},
+        "attribute_groups": {"complexity": {"label":"Complexity"}},
+        "node_kinds": {"file": {"label":"File","plural":"Files"}},
+        "nodes": [ {"id":"{target}/main.go","kind":"file","name":"main.go","cyclomatic":1} ],
+        "edges": [],
+        "cycles": [],
+        "stats": {"cyclomatic": 1.0}
+      }}
+    }
+  }
+}
