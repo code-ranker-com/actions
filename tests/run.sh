@@ -84,20 +84,18 @@ section "1) build-comment.sh -- clean run (no findings, no baseline, no verdict)
 rc=$(run_build_comment clean URL=https://example.com/report.html)
 assert_exit0                    "clean: exits 0"                              "$rc"
 assert_eq "clean: errors.n == 0" "$(cat "$WORK/case/errors.n" 2>/dev/null)" "0"
-assert_contains     "clean: plain header + View report link" "$WORK/case/comment.md" \
-  '## code-ranker <a href="https://example.com/report.html"'
+# A fully clean run says nothing at all: no findings, no metric changes and no
+# verdict means there is nothing worth a PR comment, so comment.md is *only* the
+# sentinel and whoever posts (the backend for PRs, the job summary for pushes)
+# skips it. The report itself is still published and reachable from the dashboard.
+assert_contains      "clean: comment.md is the no-comment sentinel" \
+  "$WORK/case/comment.md" "<!-- code-ranker:no-comment -->"
+assert_not_contains  "clean: no header / View report link" "$WORK/case/comment.md" \
+  '## code-ranker'
 assert_not_contains  "clean: no 'finding' wording"   "$WORK/case/comment.md" "finding"
 assert_not_contains  "clean: no 'error ❌' wording"   "$WORK/case/comment.md" "error ❌"
-assert_contains      "clean: AI fix-prompt present"  "$WORK/case/comment.md" "Prompt for fix all with AI"
-# KNOWN GAP, not a regression introduced here -- see tests/README.md "Known
-# spec gap": a no-comment sentinel for clean runs already exists on branch
-# draft/contents-read-only (commit 07966da) but has not landed on
-# hotfix/empty-analysis-no-op, so scripts/build-comment.sh as tested here does
-# NOT emit it yet. We assert the real, current behaviour and pin the absence
-# of the sentinel so this test starts failing (loudly, on purpose) the day
-# someone ports that feature without updating the fixture/assertions.
-assert_not_contains  "clean: no-comment sentinel absent (see README: known gap)" \
-  "$WORK/case/comment.md" "<!-- code-ranker:no-comment -->"
+assert_not_contains  "clean: no AI fix-prompt (nothing to fix)" \
+  "$WORK/case/comment.md" "Prompt for fix all with AI"
 
 # ============================================================================
 section "2) build-comment.sh -- findings, advisory (DO_CHECK unset)"

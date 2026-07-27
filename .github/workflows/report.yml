@@ -4,29 +4,35 @@
 # languages in a single pass, so this is ONE job (no matrix): one analysis →
 # snapshot, from which it
 #   - generates an HTML report (a diff vs the default-branch baseline when one
-#     exists) and keyless-uploads it over OIDC (advisory), together with a
-#     rendered comment body (header, View-report button, a <details> per
-#     language with its violations + stat-diff, baseline line, AI prompt);
+#     exists), together with a rendered comment body (header, View-report
+#     button, a <details> per language with its violations + stat-diff,
+#     baseline line, AI prompt) — report-<H>.html + comment.md + snap.json are
+#     always published as the `code-ranker-report` build artifact;
 #   - optionally runs the lint gate `check` (do_check, default false) — when
 #     enabled, a non-zero exit reds the job; off by default (advisory only).
 #
-# The PR comment itself is posted/updated by the BACKEND (the code-ranker GitHub
-# App), not by this workflow: same-repo PRs are handled when the /upload call
-# above lands, fork PRs via a `workflow_run` webhook (the backend downloads the
-# fork-report artifact itself — see the "Upload fork report artifact" step
-# below). This workflow therefore never needs `pull-requests: write`.
+# The PR comment is posted/updated by the BACKEND (the code-ranker GitHub App):
+# it downloads the `code-ranker-report` artifact via a `workflow_run` webhook and
+# posts the comment — same-repo and fork PRs handled identically.
 #
-# Baseline = the default-branch snapshot, kept in the Actions cache (single key);
-# default-branch pushes refresh it, every branch/PR reads it (cache scope), so the
-# stat-diff works on any branch. NO secret: identity is keyless OIDC. Clients pin a
-# thin caller stub at @v1; we ship changes by moving the tag.
+# Baseline = the tip snapshot of the PR's base branch (for a push, that branch's
+# own previous tip), kept per branch in the Actions cache. There is no
+# cross-branch fallback: a branch with no baseline yet gets a report without a
+# diff rather than a diff against the wrong branch. The client grants only
+# `contents: read` (+ `security-events: write` when `sarif: true`). The copy-paste
+# stub tracks the `@v1` tag; the App-onboarding PR instead pins it to an immutable
+# commit SHA.
 name: code-ranker
 
 on:
   workflow_call:
     inputs:
       do_report:
-        description: Generate + keyless-upload the HTML report (the View-report button).
+        description: >-
+          Generate the HTML report and publish report-<H>.html + comment.md +
+          snap.json as the `code-ranker-report` build artifact (the backend
+          downloads it via a workflow_run webhook and posts the View-report
+          link).
         required: false
         type: boolean
         default: true
@@ -41,16 +47,20 @@ on:
         default: false
       pr_comment:
         description: >-
-          Send the rendered comment body to the backend on upload, so the
-          code-ranker GitHub App posts/updates the PR comment.
+          Include the rendered comment.md in the code-ranker-report artifact,
+          so the code-ranker GitHub App posts/updates the PR comment after
+          picking it up via webhook.
         required: false
         type: boolean
         default: true
       sarif:
-        description: Upload SARIF to code scanning (inline PR alerts). Needs code scanning enabled.
+        description: >-
+          Upload SARIF to code scanning (inline PR alerts). Opt-in: needs code
+          scanning enabled AND `security-events: write` added to the caller's
+          `permissions:` (not granted by default).
         required: false
         type: boolean
-        default: true
+        default: false
       runs_on:
         description: Runner label for the job.
         required: false
@@ -66,10 +76,10 @@ on:
         default: false
 
 env:
-  API_UPLOAD_URL: "https://api.code-ranker.com/upload"
-  # v5.0.0 is the latest stable release, so track `releases/latest` (future v5.x
-  # patches apply automatically).
-  CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/latest/download/code-ranker-installer.sh"
+  # Pinned to a specific code-ranker CLI release so this workflow's behavior is
+  # deterministic. Bump the tag here together with each report.yml release that
+  # needs a newer CLI.
+  CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/download/v5.0.4/code-ranker-installer.sh"
 
 concurrency:
   group: code-ranker-${{ github.event.pull_request.number || github.ref }}
@@ -78,13 +88,12 @@ concurrency:
 jobs:
   code-ranker:
     runs-on: ${{ inputs.runs_on }}
-    # No job-level continue-on-error: advisory steps (render-diff/upload/comment)
-    # opt out per-step; only the check gate (and a broken analysis) fail the job.
-    # Permissions come from the CALLER stub: id-token: write, contents: read.
-    # No pull-requests: write is needed — the backend GitHub App posts the PR
-    # comment, not this workflow.
+    # Advisory steps (render-diff/artifact-upload/comment) opt out per-step;
+    # only the check gate (and a broken analysis) fail the job. Permissions come
+    # from the CALLER stub: `contents: read` by default; `security-events: write`
+    # only when the caller opts into `sarif: true`.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # Default: install the prebuilt binary (seconds, no toolchain).
       - name: Install code-ranker (prebuilt binary)
@@ -99,7 +108,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Rust cache (source build)
         if: inputs.install_from_source
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Build code-ranker from source
         if: inputs.install_from_source
         run: |
@@ -129,13 +138,13 @@ jobs:
           echo "REPORT_FILE=report-${H}.html" >> "$GITHUB_ENV"
           echo "REPORT_KIND=report" >> "$GITHUB_ENV"
 
-      # A repo with no supported language (docs-only, scaffolding, an empty new
-      # repo) still produces a valid — but empty — snapshot: code-ranker >= 5.0.4
-      # exits 0 there instead of erroring. Everything downstream is then pointless
-      # noise, and staging that empty snapshot as the new baseline would silently
-      # destroy a good one, so gate the rest of the job on having analyzed
-      # something. Checks both shapes (`plugins` list, `languages` map) so it
-      # can't accidentally read "empty" on a healthy snapshot.
+      # A repo with no supported language (docs-only, scaffolding, a brand-new
+      # empty repo) still produces a valid — but empty — snapshot: code-ranker
+      # >= 5.0.4 exits 0 there instead of erroring. Everything below is then
+      # pointless noise, and staging that empty snapshot as the new baseline would
+      # silently destroy a good one, so gate the rest of the job on having
+      # analyzed something. Checks both shapes (`plugins` list, `languages` map)
+      # so it can never read "empty" on a healthy snapshot.
       - name: Detect empty analysis
         run: |
           set -uo pipefail
@@ -147,29 +156,37 @@ jobs:
             echo "::notice title=code-ranker::no supported language detected — nothing to analyze"
           fi
 
-      # Inline alerts in the PR diff + Security → Code scanning. Same-repo only
-      # (fork PRs get a read-only token); advisory — a miss never fails the job.
+      # Opt-in (sarif: false by default) — needs the caller's `security-events:
+      # write` permission, which is NOT granted unless they explicitly ask for
+      # it. Inline alerts in the PR diff + Security → Code scanning. Same-repo
+      # only (fork PRs get a read-only token); advisory — a miss never fails
+      # the job.
       - name: Upload SARIF to code scanning
         if: >-
-          always() && env.HAS_LANGS == 'true'
-          && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
+          always() && env.HAS_LANGS == 'true' && inputs.sarif && hashFiles(format('report-{0}.sarif', env.H)) != '' &&
           (github.event_name == 'push'
            || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           sarif_file: report-${{ env.H }}.sarif
 
-      # Default-branch baseline snapshot (single key; cache scope lets any branch/PR
-      # read the default-branch cache). Empty on the first run -> diff "no baseline".
+      # Baseline = the tip snapshot of THIS PR's base branch (for a push: the
+      # branch's own previous tip). No cross-branch fallback: if the base branch
+      # has no baseline yet, we render a "no baseline" report rather than diff
+      # against the wrong branch. The `-${{ github.sha }}` key never matches (it
+      # exists only to satisfy the action) so restore resolves via the branch-scoped
+      # restore-keys prefix. Actions cache scope lets a run read its base branch
+      # cache with no extra token — this is why the caller stub needs only
+      # `contents: read`.
       - name: Restore baseline snapshot
         if: env.HAS_LANGS == 'true'
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
-          key: ck-baseline-${{ github.sha }}
+          key: ck-baseline-${{ github.base_ref || github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ck-baseline-
+            ck-baseline-${{ github.base_ref || github.ref_name }}-
 
       # Incompatible snapshot schema major -> drop the baseline so the diff falls
       # back to "no baseline" instead of producing misleading numbers.
@@ -222,25 +239,27 @@ jobs:
           fi
 
       # Helper scripts at the EXACT version of this reusable workflow. Needed
-      # BEFORE the upload below: the rendered comment body is itself uploaded
-      # as part of the /upload call (see the "comment" form field there), so it
-      # has to exist first. Built whenever it will actually be consumed: by the
+      # BEFORE the artifact upload below: comment.md is built here and then
+      # published inside the code-ranker-report artifact (this workflow never
+      # calls /upload). Built whenever it will actually be consumed: by the
       # backend for pull_request (if pr_comment), or by the job summary for push.
       - name: Get code-ranker-ci scripts
         if: >-
           env.HAS_LANGS == 'true' &&
           ((github.event_name == 'pull_request' && inputs.pr_comment)
            || github.event_name == 'push')
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: code-ranker-com/actions
           ref: ${{ github.job_workflow_sha }}
           path: .ck-ci
 
       # Renders comment.md with a LITERAL {{CR_REPORT_URL}} placeholder in place
-      # of the report link -- the real URL isn't known yet (upload hasn't run).
-      # The backend substitutes it when posting the PR comment; the Job summary
-      # step below substitutes it for the push case.
+      # of the report link -- this workflow never uploads anything synchronously,
+      # so the real URL is never known here. The backend substitutes the real
+      # URL when it posts the PR comment (after downloading the artifact via
+      # webhook); the Job summary step below just swaps in a static placeholder
+      # string for the push case, since there's no PR to comment on.
       - name: Build comment
         if: >-
           env.HAS_LANGS == 'true' &&
@@ -253,69 +272,34 @@ jobs:
           DO_CHECK: ${{ inputs.do_check }}
         run: bash .ck-ci/scripts/build-comment.sh
 
-      # Same-repo only: fork PRs get NO id-token. Advisory: continue-on-error.
-      # For pull_request (when pr_comment is on), comment.md is attached so the
-      # backend can post it as the PR comment via the code-ranker GitHub App.
-      - name: Upload to code-ranker (OIDC, keyless)
-        if: >-
-          env.HAS_LANGS == 'true' && inputs.do_report &&
-          (github.event.pull_request.head.repo.full_name == github.repository
-           || github.event_name == 'push')
-        id: up
+      # Publish report + comment + snapshot as the `code-ranker-report` artifact
+      # for any event; the backend picks it up via a `workflow_run` webhook and
+      # posts the PR comment through the App. Member names (report-<H>.html,
+      # comment.md, snap.json, viol.json) are what the backend expects; some may
+      # be absent — if-no-files-found: warn tolerates it.
+      - name: Upload code-ranker-report artifact
+        if: env.HAS_LANGS == 'true' && inputs.do_report && hashFiles(env.REPORT_FILE) != ''
         continue-on-error: true
-        run: |
-          set -euo pipefail
-          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=code-ranker-reports" | jq -r .value)
-          N=$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)
-          CR_VER=$(code-ranker --version 2>/dev/null | awk '{print $2}')
-          ARGS=(
-            -F "pr=${{ github.event.pull_request.number }}"
-            -F "violations=${N:-0}"
-            -F "code_ranker_version=${CR_VER:-}"
-            -F "report=@${REPORT_FILE};type=text/html"
-          )
-          if [ "${{ github.event_name == 'pull_request' && inputs.pr_comment }}" = "true" ] && [ -f comment.md ]; then
-            ARGS+=(-F "comment=@comment.md;type=text/markdown")
-          fi
-          OUT=$(curl -sS -w $'\n%{http_code}' -X POST "$API_UPLOAD_URL" \
-            -H "Authorization: Bearer $TOKEN" \
-            "${ARGS[@]}")
-          CODE="${OUT##*$'\n'}"; BODY="${OUT%$'\n'*}"
-          if [ "$CODE" = "200" ]; then
-            echo "url=$(printf '%s' "$BODY" | jq -r .url)" >> "$GITHUB_OUTPUT"
-          elif [ "$CODE" = "403" ] && printf '%s' "$BODY" | jq -e '.error=="needs_email_verification"' >/dev/null 2>&1; then
-            MSG=$(printf '%s' "$BODY" | jq -r '.message // ""')
-            DASH_URL=$(printf '%s' "$BODY" | jq -r '.dashboard_url // empty')
-            echo "::error title=code-ranker not activated::${MSG}${DASH_URL:+ Activate here: ${DASH_URL}}"
-          else
-            echo "::warning title=code-ranker upload failed::HTTP ${CODE}: ${BODY}"
-          fi
-
-      # Fork PRs: no id-token, so the OIDC upload above is skipped. Publish the
-      # HTML as an ordinary artifact; the code-ranker backend picks it up via a
-      # `workflow_run` webhook (privileged base-repo context), uploads it, and
-      # posts the PR comment through the GitHub App. Shape: exactly one
-      # report-*.html, which the backend validates before forwarding.
-      - name: Upload fork report artifact
-        if: >-
-          env.HAS_LANGS == 'true'
-          && inputs.do_report && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name != github.repository
-          && hashFiles(format('report-{0}.html', env.H)) != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: code-ranker-fork-report
-          path: report-${{ env.H }}.html
-          if-no-files-found: ignore
-          retention-days: 1
+          name: code-ranker-report
+          path: |
+            ${{ env.REPORT_FILE }}
+            comment.md
+            snap.json
+            viol.json
+          if-no-files-found: warn
+          # Recovery window: if the backend is down when the webhook fires, the
+          # artifact is the only copy of the report. One day meant an outage
+          # longer than 24h lost every report in it, unrecoverably; two weeks
+          # survives any realistic downtime and costs the client a few tens of MB.
+          retention-days: 14
 
       # Push: surface the same body in the job summary (no PR to comment on).
-      # comment.md still carries the literal {{CR_REPORT_URL}} placeholder (the
-      # backend substitutes it for PR comments); do the same substitution here
-      # using the URL the upload step just returned.
-      # A green job with no report and no comment reads as "silently broken", so
-      # say plainly why there was nothing to do.
+      # The {{CR_REPORT_URL}} placeholder is swapped for a static note here; the
+      # backend fills the real URL when it posts the PR comment from the artifact.
+      # A green job with no report and no comment reads as "silently broken",
+      # so say plainly why there was nothing to do.
       - name: Job summary (nothing to analyze)
         if: env.HAS_LANGS != 'true'
         run: |
@@ -324,23 +308,28 @@ jobs:
 
       - name: Job summary
         if: env.HAS_LANGS == 'true' && github.event_name == 'push' && hashFiles('comment.md') != ''
-        env:
-          REAL_URL: ${{ steps.up.outputs.url }}
         run: |
-          sed "s|{{CR_REPORT_URL}}|${REAL_URL:-(report not uploaded)}|g" comment.md >> "$GITHUB_STEP_SUMMARY"
+          # A clean run renders comment.md as the no-comment sentinel; show a
+          # one-liner instead of the (invisible) sentinel HTML comment.
+          if grep -q "code-ranker:no-comment" comment.md; then
+            echo "code-ranker: clean run — no findings or metric changes." >> "$GITHUB_STEP_SUMMARY"
+          else
+            sed "s|{{CR_REPORT_URL}}|(report will appear via the code-ranker app)|g" comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      # Default-branch pushes refresh the baseline for every other branch.
-      # Never stage an empty snapshot: it would overwrite a good baseline and make
-      # every later PR diff against nothing ("everything is new").
-      - name: Stage new baseline (default branch)
-        if: env.HAS_LANGS == 'true' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
+      # Every push refreshes its own branch's baseline, keyed by branch name, so a
+      # PR into any branch (not just the default) diffs against that branch's real
+      # tip. Short-lived branches leave a tiny snap.json entry that LRU eviction
+      # reaps; the default branch is always kept warm as the universal fallback.
+      - name: Stage new baseline
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push'
         run: mkdir -p baseline && cp snap.json baseline/snap.json
-      - name: Save baseline snapshot (default branch)
-        if: env.HAS_LANGS == 'true' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push'
-        uses: actions/cache/save@v6
+      - name: Save baseline snapshot
+        if: env.HAS_LANGS == 'true' && github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline
-          key: ck-baseline-${{ github.sha }}
+          key: ck-baseline-${{ github.ref_name }}-${{ github.sha }}
 
       # Lint gate: reds the job on violations (so it can be a required status
       # check). With a baseline it gates on REGRESSIONS only (relative ratchet:

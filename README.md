@@ -1,6 +1,6 @@
 # code-ranker-ci
 
-Reusable GitHub Actions workflow for **code-ranker Reports**. Drop in one file, get an HTML report generated on your CI and posted as a PR comment by the code-ranker GitHub App — no secrets, keyless OIDC.
+Reusable GitHub Actions workflow for **code-ranker Reports**. Drop in one file, get an HTML report generated on your CI and posted as a PR comment by the code-ranker GitHub App — no secrets, no OIDC, and by default only `contents: read`.
 
 Part of the [code-ranker](https://github.com/code-ranker-com/code-ranker) Reports product.
 
@@ -13,13 +13,13 @@ Proprietary. This repository may only be used to integrate your repositories wit
 On every pull request (and every push) the workflow:
 
 1. Installs `code-ranker` (precompiled binary, seconds)
-2. Builds a self-contained HTML report for your code
-3. Uploads it keylessly via OIDC, along with the rendered comment body
-4. The code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`)
+2. Builds a self-contained HTML report for your code, plus the rendered comment body
+3. Publishes report-\<H\>.html + comment.md + snap.json + viol.json as the `code-ranker-report` build artifact (same-repo and fork PRs alike)
+4. The code-ranker backend downloads that artifact via a `workflow_run` webhook and the code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`, and never mints an OIDC token)
 
-By default code-ranker is advisory (`do_check: false`): findings show up in the PR comment and in code scanning, but never red the job. Pass `do_check: true` — and mark `code-ranker` a required status check — to gate merges on them instead.
+By default code-ranker is advisory (`do_check: false`): findings show up in the PR comment and, if you opt into `sarif: true`, in code scanning — but never red the job. Pass `do_check: true` — and mark `code-ranker` a required status check — to gate merges on them instead.
 
-The comment reflects the mode: advisory findings are listed neutrally (e.g. "3 findings"), a gate run marks them "error ❌" with a collapsible Violations list. Either way an AI fix-prompt is always included, and a language with nothing new to report (no findings, no real metric change) is simply omitted — no "no baseline yet" filler.
+The comment reflects the mode: advisory findings are listed neutrally (e.g. "3 findings"), a gate run marks them "error ❌" with a collapsible Violations list. The AI fix-prompt section is included whenever there's at least one finding, and omitted on a clean run; a language with nothing new to report (no findings, no real metric change) is likewise simply omitted — no "no baseline yet" filler. And when a run is **fully** clean — no findings and no metric changes anywhere — no PR comment is posted at all; the report is still published and reachable from your dashboard, so a green PR isn't nagged.
 
 ## Setup
 
@@ -34,18 +34,31 @@ jobs:
   code-ranker:
     uses: code-ranker-com/actions/.github/workflows/report.yml@v1
     permissions:
-      id-token: write          # OIDC keyless — no secret needed
-      contents: read
-      security-events: write   # upload SARIF to code scanning (inline PR alerts)
+      contents: read            # the only permission needed by default
 ```
 
-`push` is left unfiltered on purpose: the stat-diff baseline is refreshed on your repo's actual default branch (checked at runtime), so this works out of the box whatever your default branch is called — no need to edit the trigger.
+`push` is left unfiltered on purpose: every push refreshes that branch's own baseline snapshot, cached under its branch name. A PR diffs against its actual base branch's baseline — whatever that branch is called, not just your default — and a push refreshes the pushed-to branch's own baseline the same way. There's no cross-branch fallback: a branch (or PR base) with no baseline yet renders a report without a diff rather than diffing against the wrong branch.
 
-> If installed via GitHub App, the onboarding PR already adds this workflow for you — pinned to the exact release commit SHA rather than the floating `@v1` tag shown above, for a reproducible first install.
+> If installed via the GitHub App, the [dashboard](https://dashboard.code-ranker.com) offers one-click setup links for each repository that open GitHub's file editor with this workflow prefilled — choose the floating `@v1` (auto-updates) or the exact release commit SHA (immutable, Dependabot-bumpable). You review and commit the file yourself; the App has no write access to your code.
 
-## Keyless OIDC — why no secrets
+## No secrets, no OIDC
 
-GitHub Actions issues a short-lived OIDC token (audience `code-ranker-reports`) that proves the run's identity. Nothing goes in **Settings → Secrets**. The token lives minutes and is only accepted by our service.
+The workflow never mints an OIDC token and never calls an upload API directly. It publishes the report, rendered comment, snapshot, and violations file as the `code-ranker-report` build artifact; the code-ranker backend picks that up itself via a `workflow_run` webhook (a privileged, base-repo context regardless of where the run came from). Nothing goes in **Settings → Secrets**, and no `id-token: write` is requested.
+
+## SARIF / code scanning (opt-in)
+
+`sarif` defaults to `false`: by default the workflow does not write to your repo's Security tab. To get inline code-scanning alerts on the PR diff, opt in explicitly:
+
+```yaml
+    uses: code-ranker-com/actions/.github/workflows/report.yml@v1
+    with:
+      sarif: true
+    permissions:
+      contents: read
+      security-events: write   # required only when sarif: true
+```
+
+The upload only runs for same-repo events (a push, or a PR from a branch in the same repo): a fork PR gets a read-only token that can't write to code scanning, so the step is skipped there — like the rest of the report/comment pipeline, a SARIF miss is advisory and never fails the job.
 
 ## Versioning `@v1`
 
@@ -57,9 +70,11 @@ The stub pins the floating major tag `@v1`. Compatible improvements (new analysi
 For full reproducibility, pin to a SHA and use Dependabot:  
 `uses: code-ranker-com/actions/.github/workflows/report.yml@<sha>`
 
+Inside the reusable workflow itself, every action it calls (`actions/checkout`, `actions/cache`, `actions/upload-artifact`, `github/codeql-action/upload-sarif`) is pinned to a commit SHA, and the `code-ranker` CLI is installed from a fixed release download (currently `v5.0.4`) rather than `releases/latest`. So whichever ref you point `uses:` at, that run's actions and CLI build are deterministic — they don't drift underneath you between runs.
+
 ## Fork PRs
 
-Forks don't receive an OIDC token from GitHub, so direct upload isn't possible. Instead the workflow publishes the HTML report as a plain build artifact (no secrets), and the code-ranker backend picks it up itself via a `workflow_run` webhook, uploads it, and posts the PR comment through the GitHub App. **`pull_request_target` is never used.**
+Same-repo and fork PRs are handled identically: the workflow always publishes the HTML report, rendered comment, snapshot, and violations file as the `code-ranker-report` build artifact (no secrets, no OIDC), and the code-ranker backend picks it up itself via a `workflow_run` webhook, uploads the report, and posts the PR comment through the GitHub App. **`pull_request_target` is never used.**
 
 No extra setup is needed in your repo for this — it works out of the box with the same stub.
 

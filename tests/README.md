@@ -45,25 +45,17 @@ to wrapping those in this runner too.
   every `$HERE/<file>` that `scripts/*.sh` sources, actually exists on disk
   (catches a silent-breakage-by-rename).
 
-## Known spec gap: the clean-run "no-comment" sentinel
+## Clean runs post nothing
 
-While writing the clean-run fixture we found that `scripts/build-comment.sh`
-on this branch (`hotfix/empty-analysis-no-op`, and `main`) does **not** emit a
-`<!-- code-ranker:no-comment -->` sentinel for a fully clean run (no findings,
-no metric changes, no verdict) -- it renders the normal header + AI-prompt +
-baseline/updated line instead. That sentinel-based "skip posting a comment
-entirely on a clean run" feature already exists, implemented, on branch
-`draft/contents-read-only` (commit `07966da`, "feat: suppress the PR comment
-on a clean run + per-branch baseline header") -- it just hasn't been merged
-into this branch/`main` yet.
+A fully clean run — no findings, no metric changes, no improved/degraded verdict
+— has nothing worth saying, so `scripts/build-comment.sh` writes only
+`<!-- code-ranker:no-comment -->` into `comment.md`. Whoever posts skips it: the
+backend for PR comments (`routes::webhook` and, for legacy OIDC callers,
+`routes::upload`), the job summary for pushes. The report is still published and
+reachable from the dashboard — a green PR just doesn't get nagged.
 
-Test case 1 (`clean run`) therefore asserts the **real, current** behaviour
-(no sentinel) and explicitly pins the sentinel's *absence*, with a comment
-pointing back here, instead of quietly encoding the aspirational behaviour.
-This is intentional, not an oversight: per the task scope, `build-comment.sh`'s
-behaviour was not to be changed here beyond the optional `HAS_LANGS`
-extraction. If/when `draft/contents-read-only` (or just that commit) lands on
-this branch, flip that assertion to expect the sentinel and update this note.
+Test case 1 pins exactly that: the sentinel is present, and the header, the
+`View report` link and the AI fix-prompt are all absent.
 
 ## Adding a case
 
