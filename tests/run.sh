@@ -218,6 +218,38 @@ while IFS= read -r ref; do
   fi
 done < <(grep -ohE '\$HERE/[A-Za-z0-9_.-]+' "$ROOT"/scripts/*.sh | sed 's#^\$HERE/##' | sort -u)
 
+# ============================================================================
+section "9) Delivery path is exactly one of legacy-OIDC / artifact (LIVE from report.yml)"
+# ============================================================================
+# Both paths firing double-posts the report; neither firing loses it while the
+# job still goes green. The guards live in report.yml, so read them from there.
+if python3 "$HERE/lib/extract_delivery_steps.py" "$REPORT_YML" "$WORK/delivery" \
+     2>"$WORK/delivery_err.log"; then
+  pass "delivery: both steps present in report.yml"
+
+  assert_contains "delivery: legacy path requires LEGACY_OIDC == 'true'" \
+    "$WORK/delivery/legacy_if.txt" "env.LEGACY_OIDC == 'true'"
+  assert_contains "delivery: artifact path requires LEGACY_OIDC != 'true'" \
+    "$WORK/delivery/artifact_if.txt" "env.LEGACY_OIDC != 'true'"
+
+  # The runner exposes ACTIONS_ID_TOKEN_REQUEST_URL as a process env var, but the
+  # `env` context in an `if:` only carries workflow/job/step `env:` entries — so
+  # gating on it there reads as empty for everyone and kills the legacy path.
+  assert_not_contains "delivery: legacy guard does not test the OIDC var via the env context" \
+    "$WORK/delivery/legacy_if.txt" "env.ACTIONS_ID_TOKEN_REQUEST_URL"
+  assert_contains "delivery: detection reads the OIDC var from the shell" \
+    "$WORK/delivery/detect_run.txt" 'ACTIONS_ID_TOKEN_REQUEST_URL:-'
+
+  # Both branches must assign, or a false stays unset and every caller silently
+  # takes the artifact path.
+  assert_contains "delivery: detection sets LEGACY_OIDC=true" \
+    "$WORK/delivery/detect_run.txt" "LEGACY_OIDC=true"
+  assert_contains "delivery: detection sets LEGACY_OIDC=false" \
+    "$WORK/delivery/detect_run.txt" "LEGACY_OIDC=false"
+else
+  fail "delivery: both steps present in report.yml" "$(cat "$WORK/delivery_err.log")"
+fi
+
 # ------------------------------------------------------------------ summary --
 printf '\n%s\n' "----------------------------------------"
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

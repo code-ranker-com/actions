@@ -15,6 +15,12 @@
 # it downloads the `code-ranker-report` artifact via a `workflow_run` webhook and
 # posts the comment — same-repo and fork PRs handled identically.
 #
+# One exception, kept for callers still on a pre-artifact stub: those grant
+# `id-token: write`, and such a run POSTs the report to the API directly instead
+# of publishing the artifact (see "Deliver report (legacy OIDC callers)"). Each
+# run takes exactly one of the two paths, chosen by whether the caller's
+# permissions make an OIDC token available.
+#
 # Baseline = the tip snapshot of the PR's base branch (for a push, that branch's
 # own previous tip), kept per branch in the Actions cache. There is no
 # cross-branch fallback: a branch with no baseline yet gets a report without a
@@ -80,6 +86,8 @@ env:
   # deterministic. Bump the tag here together with each report.yml release that
   # needs a newer CLI.
   CR_INSTALLER: "https://github.com/code-ranker-com/code-ranker/releases/download/v5.0.4/code-ranker-installer.sh"
+  # Only used by the legacy OIDC delivery path (see "Deliver report" below).
+  API_UPLOAD_URL: "https://api.code-ranker.com/upload"
 
 concurrency:
   group: code-ranker-${{ github.event.pull_request.number || github.ref }}
@@ -272,13 +280,84 @@ jobs:
           DO_CHECK: ${{ inputs.do_check }}
         run: bash .ck-ci/scripts/build-comment.sh
 
+      # Which delivery path this run takes. Stubs generated before the artifact
+      # model grant `id-token: write`, so the runner exposes an OIDC token
+      # endpoint and the report can be POSTed straight to the API, exactly as
+      # those callers have always worked. The current stub grants `contents:
+      # read` only, no token is available, and delivery goes through the
+      # artifact + `workflow_run` webhook instead.
+      #
+      # Detected in a step rather than in an `if:` expression on purpose: the
+      # `env` context only carries variables declared in a workflow/job/step
+      # `env:` block, so `env.ACTIONS_ID_TOKEN_REQUEST_URL` would read as empty
+      # for everyone and silently disable the legacy path.
+      - name: Detect delivery path
+        if: env.HAS_LANGS == 'true' && inputs.do_report
+        run: |
+          set -uo pipefail
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "LEGACY_OIDC=true" >> "$GITHUB_ENV"
+          else
+            echo "LEGACY_OIDC=false" >> "$GITHUB_ENV"
+          fi
+
+      # Legacy callers only. Same-repo events only: a fork PR gets no id-token
+      # even from a stub that asks for one, so it falls through to the artifact.
+      # Advisory (continue-on-error): a delivery failure must not red the job.
+      #
+      # Delete this step, its detection step, and API_UPLOAD_URL once no caller
+      # is on a pre-artifact stub — until then removing it silently stops report
+      # delivery for every repo that has already merged the old integration.
+      - name: Deliver report (legacy OIDC callers)
+        if: >-
+          env.HAS_LANGS == 'true' && inputs.do_report
+          && env.LEGACY_OIDC == 'true' && hashFiles(env.REPORT_FILE) != ''
+          && (github.event.pull_request.head.repo.full_name == github.repository
+              || github.event_name == 'push')
+        id: up
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=code-ranker-reports" | jq -r .value)
+          N=$(jq 'if type=="array" then length else (.violations|length) end' viol.json 2>/dev/null || echo 0)
+          CR_VER=$(code-ranker --version 2>/dev/null | awk '{print $2}')
+          ARGS=(
+            -F "pr=${{ github.event.pull_request.number }}"
+            -F "violations=${N:-0}"
+            -F "code_ranker_version=${CR_VER:-}"
+            -F "report=@${REPORT_FILE};type=text/html"
+          )
+          if [ "${{ github.event_name == 'pull_request' && inputs.pr_comment }}" = "true" ] && [ -f comment.md ]; then
+            ARGS+=(-F "comment=@comment.md;type=text/markdown")
+          fi
+          OUT=$(curl -sS -w $'\n%{http_code}' -X POST "$API_UPLOAD_URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            "${ARGS[@]}")
+          CODE="${OUT##*$'\n'}"; BODY="${OUT%$'\n'*}"
+          if [ "$CODE" = "200" ]; then
+            echo "url=$(printf '%s' "$BODY" | jq -r .url)" >> "$GITHUB_OUTPUT"
+          elif [ "$CODE" = "403" ] && printf '%s' "$BODY" | jq -e '.error=="needs_email_verification"' >/dev/null 2>&1; then
+            MSG=$(printf '%s' "$BODY" | jq -r '.message // ""')
+            DASH_URL=$(printf '%s' "$BODY" | jq -r '.dashboard_url // empty')
+            echo "::error title=code-ranker not activated::${MSG}${DASH_URL:+ Activate here: ${DASH_URL}}"
+          else
+            echo "::warning title=code-ranker upload failed::HTTP ${CODE}: ${BODY}"
+          fi
+
       # Publish report + comment + snapshot as the `code-ranker-report` artifact
       # for any event; the backend picks it up via a `workflow_run` webhook and
       # posts the PR comment through the App. Member names (report-<H>.html,
       # comment.md, snap.json, viol.json) are what the backend expects; some may
       # be absent — if-no-files-found: warn tolerates it.
+      #
+      # Skipped when the step above already delivered the report, so a repo whose
+      # org has both the legacy stub and the webhook wired up gets one report and
+      # one comment, not two.
       - name: Upload code-ranker-report artifact
-        if: env.HAS_LANGS == 'true' && inputs.do_report && hashFiles(env.REPORT_FILE) != ''
+        if: >-
+          env.HAS_LANGS == 'true' && inputs.do_report
+          && env.LEGACY_OIDC != 'true' && hashFiles(env.REPORT_FILE) != ''
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -308,13 +387,18 @@ jobs:
 
       - name: Job summary
         if: env.HAS_LANGS == 'true' && github.event_name == 'push' && hashFiles('comment.md') != ''
+        env:
+          # Set only on the legacy path, which knows the report URL synchronously;
+          # on the artifact path the backend mints it later, so say so instead.
+          REAL_URL: ${{ steps.up.outputs.url }}
         run: |
           # A clean run renders comment.md as the no-comment sentinel; show a
           # one-liner instead of the (invisible) sentinel HTML comment.
           if grep -q "code-ranker:no-comment" comment.md; then
             echo "code-ranker: clean run — no findings or metric changes." >> "$GITHUB_STEP_SUMMARY"
           else
-            sed "s|{{CR_REPORT_URL}}|(report will appear via the code-ranker app)|g" comment.md >> "$GITHUB_STEP_SUMMARY"
+            sed "s|{{CR_REPORT_URL}}|${REAL_URL:-(report will appear via the code-ranker app)}|g" \
+              comment.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # Every push refreshes its own branch's baseline, keyed by branch name, so a
