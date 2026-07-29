@@ -15,7 +15,9 @@ On every pull request (and every push) the workflow:
 1. Installs `code-ranker` (precompiled binary, seconds)
 2. Builds a self-contained HTML report for your code, plus the rendered comment body
 3. Publishes report-\<H\>.html + comment.md + snap.json + viol.json as the `code-ranker-report` build artifact (same-repo and fork PRs alike)
-4. The code-ranker backend downloads that artifact via a `workflow_run` webhook and the code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`, and never mints an OIDC token)
+4. The code-ranker backend downloads that artifact via a `workflow_run` webhook and the code-ranker GitHub App posts/updates the PR comment (backend-side — this workflow never needs `pull-requests: write`)
+
+Repos still on the older caller stub (the one that granted `id-token: write`) keep working: the workflow picks its delivery path per run, and takes exactly one of them — see [Two delivery paths](#two-delivery-paths).
 
 By default code-ranker is advisory (`do_check: false`): findings show up in the PR comment and, if you opt into `sarif: true`, in code scanning — but never red the job. Pass `do_check: true` — and mark `code-ranker` a required status check — to gate merges on them instead.
 
@@ -43,7 +45,25 @@ jobs:
 
 ## No secrets, no OIDC
 
-The workflow never mints an OIDC token and never calls an upload API directly. It publishes the report, rendered comment, snapshot, and violations file as the `code-ranker-report` build artifact; the code-ranker backend picks that up itself via a `workflow_run` webhook (a privileged, base-repo context regardless of where the run came from). Nothing goes in **Settings → Secrets**, and no `id-token: write` is requested.
+The current stub requests no `id-token: write`: the workflow publishes the report, rendered comment, snapshot, and violations file as the `code-ranker-report` build artifact, and the code-ranker backend picks that up itself via a `workflow_run` webhook (a privileged, base-repo context regardless of where the run came from). Nothing goes in **Settings → Secrets**.
+
+### Two delivery paths
+
+A run takes **exactly one** of these, chosen by whether an OIDC token is available to it:
+
+| Caller stub | What the run does |
+|---|---|
+| current (`permissions: contents: read`) | publishes the `code-ranker-report` artifact; the backend ingests it via `workflow_run` |
+| older stub with `id-token: write` | mints an OIDC token and `POST`s the report straight to `api.code-ranker.com/upload`; no artifact is published |
+
+Why both exist: moving the `v1` tag to the artifact-only version stopped report delivery for
+every repo whose stub had not been updated — their runs went green while no report and no PR
+comment appeared. The paths are mutually exclusive (`LEGACY_OIDC` is computed in a step, not
+an `if:` expression, because `ACTIONS_ID_TOKEN_REQUEST_URL` is not visible to the `env`
+context of a condition), so a report is never delivered twice. A fork PR gets no OIDC token
+even from a stub that asks for one, so it always falls through to the artifact path.
+
+Both paths are advisory (`continue-on-error`): a delivery failure never reds the caller's job.
 
 ## SARIF / code scanning (opt-in)
 
