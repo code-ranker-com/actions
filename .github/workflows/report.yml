@@ -175,7 +175,7 @@ jobs:
           (github.event_name == 'push'
            || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: report-${{ env.H }}.sarif
 
@@ -359,7 +359,7 @@ jobs:
           env.HAS_LANGS == 'true' && inputs.do_report
           && env.LEGACY_OIDC != 'true' && hashFiles(env.REPORT_FILE) != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: code-ranker-report
           path: |
